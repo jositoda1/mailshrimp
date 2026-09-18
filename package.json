@@ -1,0 +1,22 @@
+{
+  "name": "mailshrimp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MailShrimp is a full-stack email marketing platform built with React, TypeScript, Node.js, and a microservice architecture.",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

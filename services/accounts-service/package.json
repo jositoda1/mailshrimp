@@ -1,0 +1,36 @@
+{
+  "name": "@mailshrimp/accounts-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MailShrimp microservice responsible for account management and authentication.",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --verbose",
+    "test:watch": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --watch --verbose",
+    "test:coverage": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --coverage --verbose",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.13.5",
+    "@types/supertest": "^7.2.1",
+    "eslint": "^10.10.0",
+    "jest": "^30.5.1",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.9",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
