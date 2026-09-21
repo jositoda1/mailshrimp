@@ -1335,6 +1335,52 @@ zero known vulnerabilities. The Jest VM Modules experimental warning
 
 remains known and non-failing.
 
+## Merge policy and mandatory quality gates
+
+I treat a green CI result as a mandatory precondition for merging any pull
+request into `main`. I do not merge first and inspect the CI result afterward.
+
+For every code or documentation change, I use a dedicated feature or
+documentation branch. Before I commit and push that branch, I run the relevant
+local quality gates. For the current repository-wide workflow, the standard
+gates are:
+
+```powershell
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm audit
+```
+
+After the local gates pass, I review the Git status and diff, verify that local
+secrets such as `.env` files are not staged, commit the intended files, push
+the branch, and open a pull request targeting `main`.
+
+The pull request must then complete the GitHub Actions `Quality gates` job
+successfully. I verify that there are zero failing and zero pending required
+checks before I run the merge command. Only after that confirmation do I use a
+squash merge:
+
+```powershell
+gh pr merge --squash --delete-branch
+```
+
+I use squash merging so the completed feature enters `main` as one clean
+logical commit even when a future feature branch contains several intermediate
+development commits. Deleting the feature branch after the successful merge
+keeps the branch list focused on active work.
+
+The merge itself triggers the CI workflow on `main`. I also verify that this
+post-merge run is green. This second run is not a substitute for the pull
+request check: the required order is **local quality gates -> pull request ->
+green PR CI -> squash merge -> green main CI**.
+
+For Pull Request #1, `feat: add authentication token service`, the local
+quality gates passed, the pull-request `Quality gates` check completed
+successfully, and the post-merge CI run on `main` also completed successfully.
+The process rule above makes the ordering explicit for all subsequent work.
+
 ## JWT token service
 
 I implemented `services/accounts-service/src/auth/token-service.ts` with `jose` 6.2.12. I chose `jose` because it provides the JWT signing and verification primitives needed by the Node.js 24 ESM/TypeScript service without requiring a separate CommonJS compatibility layer. The dependency is owned by `@mailshrimp/accounts-service`, because token cryptography is currently an accounts-service responsibility rather than a generic repository-wide concern.
