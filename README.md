@@ -769,17 +769,46 @@ I do not deploy unfinished local changes directly to the production
 server. Bug fixes should include regression tests whenever a practical
 automated test can reproduce the defect.
 
-## CI/CD plan
+## CI/CD
 
-GitHub Actions has not been configured yet.
+The clean local Git history is now published to the new GitHub
+repository, and `main` tracks `origin/main`. I did not reuse the
+previous compromised repository or its history.
 
-The planned CI pipeline will use reproducible dependency installation
-and require type checking, linting, tests, and builds to succeed before
-deployment is allowed.
+Continuous integration is defined in `.github/workflows/ci.yml`. I run
+the workflow for pull requests targeting `main` and for pushes to
+`main`. This keeps proposed changes and the resulting main branch
+subject to the same repository-wide validation.
 
-The new local Git history has been created after the source tree was
-reviewed for secrets and generated or compromised artifacts. GitHub
-Actions and the GitHub remote are still pending.
+The CI job runs on `ubuntu-latest` with Node.js 24 and npm caching
+enabled. I use `npm ci` rather than `npm install` because CI should
+install reproducibly from `package-lock.json` and fail if the package
+manifest and lockfile are out of sync. The workflow then runs the same
+quality gates used locally:
+
+``` text
+npm ci
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```
+
+The build step uses the explicit package-before-service orchestration
+described above, so a fresh GitHub Actions checkout must compile
+`@mailshrimp/http` before `@mailshrimp/accounts-service`.
+
+I grant the CI workflow only `contents: read`. The validation job does
+not need repository write access, so I do not give it broader
+permissions.
+
+CI and CD are intentionally separate at this stage. The current workflow
+does not deploy, does not contain deployment credentials, and does not
+require application secrets. I will add continuous deployment only after
+this CI workflow has been committed, pushed, and observed passing on
+GitHub. Deployment will be allowed only after the required validation
+succeeds, and sensitive credentials must be stored outside source
+control using an appropriate secret mechanism.
 
 ## Infrastructure documentation
 
@@ -859,7 +888,13 @@ accounts-service foundation:
 -   successful real HTTP health request on port `3111`;
 -   successful runtime verification of startup and HTTP JSON logs;
 -   clean local Git repository initialized after a pre-commit secret and
-    artifact review.
+    artifact review;
+-   clean `main` history published to the new GitHub repository with
+    `origin/main` configured as the upstream branch;
+-   GitHub Actions CI workflow prepared at `.github/workflows/ci.yml`
+    with read-only repository permissions, Node.js 24, reproducible
+    `npm ci`, and the repository-wide typecheck, lint, test, and build
+    gates.
 
 The next implementation work will continue incrementally, with tests and
 documentation updated alongside each meaningful behavior or

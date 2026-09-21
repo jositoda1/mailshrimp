@@ -1,0 +1,70 @@
+# .github/workflows/ci.yml
+
+# MailShrimp continuous integration pipeline.
+#
+# I run the same quality gates in GitHub Actions that I run locally.
+# This prevents a change from being considered healthy only because of
+# differences between a developer machine and the CI environment.
+
+name: CI
+
+on:
+  # I validate every proposed change before it can be merged into main.
+  pull_request:
+    branches:
+      - main
+
+  # I also validate main after a direct push or merge. Branch protection will
+  # later make pull requests the preferred path as the project matures.
+  push:
+    branches:
+      - main
+
+# Read-only repository access is sufficient for this workflow.
+# I deliberately avoid granting write permissions to CI jobs that only need
+# to check out and validate source code.
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # The repository currently targets Node.js 24. Keeping the CI runtime
+      # aligned with development and production reduces environment drift.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      # npm ci installs exactly from package-lock.json and fails when the
+      # manifest and lockfile disagree. I use it in CI instead of npm install
+      # so dependency installation is reproducible and does not rewrite the
+      # lockfile.
+      - name: Install dependencies
+        run: npm ci
+
+      # Type checking runs independently from the production build so type
+      # failures are reported as their own quality gate.
+      - name: Type check
+        run: npm run typecheck
+
+      # Linting enforces the repository's static code-quality rules.
+      - name: Lint
+        run: npm run lint
+
+      # Automated tests verify application and shared-package behavior.
+      - name: Test
+        run: npm test
+
+      # The root build explicitly compiles shared packages before dependent
+      # services, so CI also proves that a fresh checkout can produce all
+      # required runtime artifacts in the correct dependency order.
+      - name: Build
+        run: npm run build
