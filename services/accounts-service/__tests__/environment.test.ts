@@ -2,7 +2,9 @@
 
 import {
   DEFAULT_PORT,
+  getAuthenticationSecrets,
   getPort,
+  MIN_AUTH_SECRET_LENGTH,
 } from "../src/config/environment.js";
 
 describe("HTTP port configuration", () => {
@@ -50,5 +52,98 @@ describe("HTTP port configuration", () => {
 
   it("accepts the highest valid TCP port", () => {
     expect(getPort("65535")).toBe(65535);
+  });
+});
+
+describe("authentication secret configuration", () => {
+  const accessTokenSecret = "a".repeat(MIN_AUTH_SECRET_LENGTH);
+  const refreshTokenSecret = "b".repeat(MIN_AUTH_SECRET_LENGTH);
+
+  /**
+   * Valid configuration must preserve the exact secret values because the
+   * token-signing layer will later consume these values directly.
+   */
+  it("returns valid and distinct authentication secrets", () => {
+    expect(
+      getAuthenticationSecrets(accessTokenSecret, refreshTokenSecret),
+    ).toEqual({
+      accessTokenSecret,
+      refreshTokenSecret,
+    });
+  });
+
+  /**
+   * Authentication must not start without both signing credentials. Failing
+   * during configuration is safer than discovering the problem when a user
+   * attempts to sign in or refresh a session.
+   */
+  it("rejects a missing access-token secret", () => {
+    expect(() =>
+      getAuthenticationSecrets(undefined, refreshTokenSecret),
+    ).toThrow("Invalid ACCESS_TOKEN_SECRET environment variable.");
+  });
+
+  it("rejects a missing refresh-token secret", () => {
+    expect(() =>
+      getAuthenticationSecrets(accessTokenSecret, undefined),
+    ).toThrow("Invalid REFRESH_TOKEN_SECRET environment variable.");
+  });
+
+  /**
+   * I protect the minimum length boundary explicitly so an accidental policy
+   * change becomes visible in the test suite.
+   */
+  it("rejects authentication secrets shorter than the minimum length", () => {
+    const tooShort = "a".repeat(MIN_AUTH_SECRET_LENGTH - 1);
+
+    expect(() =>
+      getAuthenticationSecrets(tooShort, refreshTokenSecret),
+    ).toThrow("Invalid ACCESS_TOKEN_SECRET environment variable.");
+
+    expect(() =>
+      getAuthenticationSecrets(accessTokenSecret, tooShort),
+    ).toThrow("Invalid REFRESH_TOKEN_SECRET environment variable.");
+  });
+
+  it("accepts authentication secrets exactly at the minimum length", () => {
+    expect(
+      getAuthenticationSecrets(accessTokenSecret, refreshTokenSecret),
+    ).toEqual({
+      accessTokenSecret,
+      refreshTokenSecret,
+    });
+  });
+
+  /**
+   * Access and refresh credentials must remain independent even when both
+   * supplied values individually satisfy the minimum-length requirement.
+   */
+  it("rejects reuse of the same secret for access and refresh tokens", () => {
+    expect(() =>
+      getAuthenticationSecrets(accessTokenSecret, accessTokenSecret),
+    ).toThrow(
+      "ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET must use different values.",
+    );
+  });
+
+  /**
+   * Error messages must never echo authentication credentials because startup
+   * errors can be captured by CI, process-manager, or production logs.
+   */
+  it("does not expose an invalid secret in the error message", () => {
+    const invalidSecret = "do-not-leak-this-secret";
+
+    expect(() =>
+      getAuthenticationSecrets(invalidSecret, refreshTokenSecret),
+    ).toThrow(
+      `Invalid ACCESS_TOKEN_SECRET environment variable. Expected a secret containing at least ${MIN_AUTH_SECRET_LENGTH} characters.`,
+    );
+
+    try {
+      getAuthenticationSecrets(invalidSecret, refreshTokenSecret);
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(invalidSecret);
+    }
   });
 });

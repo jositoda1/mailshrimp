@@ -1,13 +1,28 @@
 import { createApp } from "./app.js";
-import { getPort } from "./config/environment.js";
+import {
+  getAuthenticationSecrets,
+  getPort,
+} from "./config/environment.js";
 import { logger } from "./logging/logger.js";
 
 /**
- * I resolve the server port before creating the HTTP listener so invalid
- * environment configuration causes the service to fail immediately during
- * startup.
+ * I resolve required environment configuration before creating the HTTP
+ * listener so an invalid deployment fails immediately during startup instead
+ * of accepting traffic with incomplete authentication configuration.
  */
 const port = getPort();
+
+/**
+ * Authentication signing credentials are mandatory service configuration.
+ *
+ * I validate them during startup even though the token-signing layer is not
+ * wired into HTTP routes yet. This prevents a deployment from appearing
+ * healthy while carrying invalid authentication configuration.
+ *
+ * I deliberately do not log these values. Authentication secrets must never
+ * be written to application, CI, or process-manager logs.
+ */
+getAuthenticationSecrets();
 
 /**
  * I create the Express application through createApp() instead of configuring
@@ -33,6 +48,8 @@ app.listen(port, () => {
    *
    * The event name makes this entry easy to search when investigating service
    * restarts, deployments, or availability problems.
+   *
+   * Authentication secrets are intentionally absent from this log entry.
    */
   logger.info(
     {

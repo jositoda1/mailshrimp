@@ -802,13 +802,108 @@ I grant the CI workflow only `contents: read`. The validation job does
 not need repository write access, so I do not give it broader
 permissions.
 
-CI and CD are intentionally separate at this stage. The current workflow
-does not deploy, does not contain deployment credentials, and does not
-require application secrets. I will add continuous deployment only after
-this CI workflow has been committed, pushed, and observed passing on
-GitHub. Deployment will be allowed only after the required validation
-succeeds, and sensitive credentials must be stored outside source
-control using an appropriate secret mechanism.
+CI and CD are intentionally separate. The current workflow does not
+deploy, does not contain deployment credentials, and does not require
+application secrets.
+
+I committed and pushed the first CI workflow to `main` and observed its
+first real GitHub Actions execution complete successfully. The
+`Quality gates` job passed on a clean GitHub-hosted Linux runner,
+validating dependency installation, type checking, linting, tests, and
+the production build outside the local Windows development environment.
+I can inspect future workflow runs from the VS Code terminal with GitHub
+CLI commands such as `gh run list`, `gh run watch`, and `gh run view`;
+`gh run view --log-failed` is useful when a run fails.
+
+GitHub reported informational runner/action notices during that
+successful run, including the Node.js runtime transition for
+`actions/checkout@v4` and `actions/setup-node@v4`, and the announced
+future migration of the `ubuntu-latest` runner label. These notices did
+not fail the quality gates. I will treat runner/action-version
+maintenance separately from application deployment.
+
+I will add continuous deployment only after inspecting how the existing
+Lightsail service is currently started, supervised, and restarted. I do
+not want the deployment workflow to assume a process manager or restart
+mechanism that differs from production. Deployment will be allowed only
+after required validation succeeds, and sensitive credentials must
+remain outside source control using an appropriate secret mechanism. \##
+Authentication configuration foundation
+
+I have implemented the first authentication configuration foundation in
+`accounts-service` before introducing login, registration, token
+signing, refresh-token rotation, or authenticated routes.
+
+### Token lifetime policy
+
+I keep the initial token policy in
+`services/accounts-service/src/auth/token-config.ts`. Access tokens have
+a 15-minute lifetime and refresh tokens have a seven-day lifetime. The
+refresh-token cookie lifetime is derived from the refresh-token
+lifetime, and the dedicated cookie name is `mailshrimp_refresh_token`.
+
+I keep these durations in version-controlled application code because
+they are currently application security/session policy rather than
+secrets. The seven-day lifetime does not mean a refresh token will
+remain reusable without controls for seven days. I will implement
+refresh-token rotation, server-side state/revocation, reuse handling,
+and final cookie attributes with the authentication flow. The intended
+production browser cookie is `HttpOnly` and `Secure`.
+
+### Authentication signing secrets
+
+`services/accounts-service/src/config/environment.ts` now validates
+`ACCESS_TOKEN_SECRET` and `REFRESH_TOKEN_SECRET`. I require both values,
+require each to contain at least 32 characters, and reject configuration
+where both token classes use the same value. Length is a configuration
+safeguard; real values must still come from a cryptographically secure
+random source.
+
+I keep access-token and refresh-token signing credentials separate so
+the two token classes can be managed or rotated independently.
+Configuration errors never echo supplied secret values because startup
+and deployment errors can be captured in logs. The executable server
+validates authentication configuration before opening its HTTP listener,
+so invalid authentication configuration fails fast.
+
+### Local environment files and startup
+
+The public contract is `services/accounts-service/.env.example`; real
+local credentials belong in the ignored
+`services/accounts-service/.env`. I verified with `git check-ignore`
+that the real file is ignored before placing local secrets in it. I
+generated the two local signing values independently with Node's
+cryptographically secure `crypto.randomBytes()` API. Real secret values
+must never be copied into documentation, source code, tests, logs,
+commits, or example files.
+
+The local command is
+`npm run start:local --workspace @mailshrimp/accounts-service`. It uses
+Node.js 24 native `--env-file=.env` support, so I do not add a `dotenv`
+dependency merely to load local development configuration. The normal
+`start` script remains environment-neutral for production, and tests
+inject explicit values instead of loading developer secrets.
+
+I manually validated local startup after building the service. It loaded
+the ignored `.env`, validated authentication configuration, opened port
+3111, and emitted the structured `service_started` event without logging
+either authentication secret.
+
+### Authentication configuration tests
+
+Tests cover token lifetimes, derived cookie lifetime, cookie name,
+required signing credentials, the minimum-length boundary, separation of
+access and refresh secrets, and protection against secret disclosure in
+configuration errors.
+
+After this foundation was added, I ran `npm run typecheck`,
+`npm run lint`, `npm test`, `npm run build`, and `npm audit`. All gates
+passed. The accounts service passed 33 tests across six suites and the
+shared HTTP package passed three tests in one suite, for 36 tests across
+seven suites in the repository. The root build compiled the shared HTTP
+package before the dependent accounts service, and `npm audit` reported
+zero known vulnerabilities. The Jest VM Modules experimental warning
+remains known and non-failing.
 
 ## Infrastructure documentation
 
@@ -895,6 +990,11 @@ accounts-service foundation:
     with read-only repository permissions, Node.js 24, reproducible
     `npm ci`, and the repository-wide typecheck, lint, test, and build
     gates.
+-   first real GitHub Actions CI run completed successfully on `main`,
+    with the `Quality gates` job passing on a clean GitHub-hosted Linux
+    runner;
+-   GitHub CLI verified locally as the terminal workflow for inspecting
+    CI runs without requiring the GitHub web interface.
 
 The next implementation work will continue incrementally, with tests and
 documentation updated alongside each meaningful behavior or
