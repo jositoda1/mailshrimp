@@ -7,13 +7,18 @@ microservices.
 ## Project status
 
 The project is currently in the local development and validation phase.
-I am rebuilding it incrementally before creating the new Git repository,
-configuring CI/CD, or deploying the new code to the server.
+I am rebuilding it incrementally before configuring the new GitHub
+remote, CI/CD, or deploying the new code to the server.
 
 The first active backend service is `accounts-service`. Its basic
 Express application, health endpoint, executable server entry point,
-environment-based port configuration, tests, linting, type checking, and
-production build are implemented and passing locally.
+environment-based port configuration, structured logging, HTTP request
+correlation, shared HTTP status package integration, tests, linting,
+type checking, and production build are implemented and passing locally.
+
+The new Git repository has also been initialized locally with a clean
+root commit after reviewing the project tree for secrets and unwanted
+artifacts. A GitHub remote has not been configured yet.
 
 ## Architecture
 
@@ -28,6 +33,7 @@ mailshrimp/
 ├── docs/              # Project and architecture documentation
 ├── infrastructure/    # Infrastructure and deployment definitions
 ├── packages/          # Stable reusable packages shared when justified
+│   └── http/          # Shared HTTP protocol primitives
 ├── services/          # Independently deployable backend microservices
 ├── package.json
 ├── package-lock.json
@@ -57,6 +63,96 @@ reusable across applications or services. I do not move code into
 I introduce a shared package only when the responsibility is stable and
 sharing does not create unnecessary coupling between independently
 deployable microservices.
+
+### HTTP protocol package
+
+The first shared package is `@mailshrimp/http`, located under
+`packages/http`. I chose a responsibility-specific package instead of
+reintroducing a generic `__commons__` directory because shared packages
+should have a clear, stable purpose and must not become dumping grounds
+for unrelated business logic.
+
+The package currently exports `HttpStatus` through its public package
+entry point. Consumers import it as:
+
+``` typescript
+import { HttpStatus } from "@mailshrimp/http";
+```
+
+I do not import another package through relative paths such as
+`../../../packages/http/src/...`, and consumers do not deep-import its
+internal source files. This preserves the package boundary and leaves
+the implementation free to evolve behind an explicit public API.
+
+The current enum contains the HTTP statuses needed by the project or
+expected in the near term:
+
+``` typescript
+export enum HttpStatus {
+  OK_200 = 200,
+  CREATED_201 = 201,
+  NO_CONTENT_204 = 204,
+
+  BAD_REQUEST_400 = 400,
+  UNAUTHORIZED_401 = 401,
+  FORBIDDEN_403 = 403,
+  NOT_FOUND_404 = 404,
+  CONFLICT_409 = 409,
+  TOO_MANY_REQUESTS_429 = 429,
+
+  INTERNAL_SERVER_ERROR_500 = 500,
+  BAD_GATEWAY_502 = 502,
+  SERVICE_UNAVAILABLE_503 = 503,
+}
+```
+
+I include the numeric HTTP code in each enum member name so the protocol
+meaning and numeric value are visible together at every call site. The
+enum value is still the actual numeric HTTP status used by Express,
+tests, and logs. If the application later needs textual HTTP reason
+phrases, I will model those separately instead of overloading this enum.
+
+The HTTP request logger intentionally keeps numeric `400` and `500`
+thresholds when selecting log severity. Those values represent HTTP
+status-class boundaries (`4xx` and `5xx`), not the specific
+`BAD_REQUEST_400` or `INTERNAL_SERVER_ERROR_500` responses, so replacing
+those boundaries with enum members would communicate the wrong intent.
+
+`@mailshrimp/http` is a private npm workspace with its own strict
+TypeScript, ESLint, Jest, test, type-check, and build configuration. Its
+`exports` field defines the public package entry point explicitly so
+internal files are not part of the supported consumer API.
+
+### Workspace package resolution
+
+I use the real npm workspace package name for imports between packages
+and services. I reserve source aliases for imports within an application
+or package; I do not use TypeScript aliases to reach into another
+workspace's `src` directory.
+
+I require workspace imports and aliases to resolve consistently across
+TypeScript, ESLint, Jest, build, and runtime. Tests resolve internal
+workspace packages through their public package names and do not depend
+on pre-existing generated `dist` artifacts.
+
+For `@mailshrimp/http`, TypeScript development/type resolution uses the
+public `src/index.ts` entry point while the runtime import condition
+points to compiled `dist/index.js`. This allows type checking from a
+clean checkout before package build artifacts exist while preserving
+compiled JavaScript as the production runtime contract.
+
+The `accounts-service` Jest configuration maps `@mailshrimp/http` to
+that package's public source entry point during tests. I map only the
+public entry point, not implementation files. This was validated after
+deleting `packages/http/dist`: repository type checking and tests still
+passed without pre-existing generated output.
+
+The repository currently provides `ts-jest` 29.4.9 as a root development
+dependency so shared workspaces can use the common test transformer. The
+`accounts-service` currently declares the same version as well, and npm
+dedupes that installation at the root. I will only centralize additional
+development tool dependencies when doing so is an explicit
+repository-wide decision rather than an incidental cleanup.
 
 ## Package management
 
@@ -91,6 +187,7 @@ The currently configured backend toolchain includes:
 -   Supertest.
 -   ESLint 10.
 -   typescript-eslint.
+-   Pino 10.3.1 for structured application and HTTP logging.
 
 The frontend is planned around React, Vite, TypeScript, functional
 components, and hooks.
@@ -138,11 +235,21 @@ The current structure is:
 ``` text
 services/accounts-service/
 ├── __tests__/
+│   ├── helpers/
+│   │   └── test-logger.ts
 │   ├── environment.test.ts
-│   └── health.test.ts
+│   ├── health.test.ts
+│   ├── http-logger.test.ts
+│   ├── logger.test.ts
+│   └── request-context.test.ts
 ├── src/
 │   ├── config/
 │   │   └── environment.ts
+│   ├── logging/
+│   │   └── logger.ts
+│   ├── middleware/
+│   │   ├── http-logger.ts
+│   │   └── request-context.ts
 │   ├── app.ts
 │   └── server.ts
 ├── eslint.config.mjs
@@ -165,6 +272,11 @@ availability.
 Only `server.ts` opens the HTTP listener. This separation keeps
 application behavior, environment configuration, and process startup
 independently testable and maintainable.
+
+I disable Express's `X-Powered-By` response header in `createApp()`.
+Clients do not need to know which server framework implements the API,
+so I avoid unnecessary technology disclosure. An automated health-route
+regression test verifies that the header remains absent.
 
 ### Health endpoint
 
@@ -233,21 +345,175 @@ The tests cover:
 -   ports above `65535`;
 -   non-integer numeric values.
 
+## Logging and observability
+
+I treat logging as a core operational and security requirement rather
+than something to add after deployment. The goal is to make application
+errors, suspicious API activity, request failures, and service lifecycle
+events diagnosable without exposing credentials or other sensitive data.
+
+The `accounts-service` currently uses Pino 10.3.1. I use Pino because it
+produces structured JSON efficiently and provides centralized redaction
+support. Structured logs are intended to remain machine-readable so they
+can later be collected, searched, retained, and connected to monitoring
+and alerting.
+
+The shared logger configuration lives in:
+
+``` text
+services/accounts-service/src/logging/logger.ts
+```
+
+Every default log entry identifies the service as `accounts-service`.
+The executable server records startup with the `service_started` event
+instead of using `console.log`.
+
+### Log levels
+
+The current HTTP logging policy uses:
+
+-   `info` for successful requests and normal responses below HTTP 400;
+-   `warn` for HTTP 4xx client-error responses;
+-   `error` for HTTP 5xx server-error responses.
+
+These levels provide useful operational filtering without treating every
+client error as a server failure.
+
+### Sensitive-data protection
+
+I never intentionally log passwords, access tokens, refresh tokens,
+cookies, `Authorization` values, client secrets, private keys, or other
+credentials.
+
+The Pino configuration also applies centralized redaction to common
+sensitive field paths and replaces protected values with `[REDACTED]`.
+This redaction is a defensive safety layer, not permission to log
+arbitrary objects.
+
+HTTP request logging does not automatically include request bodies,
+response bodies, cookies, authorization headers, or query values. Those
+locations may contain credentials, personal information, email
+addresses, campaign data, or other sensitive information.
+
+Automated tests verify that known secret values are absent from the
+serialized Pino output and that the redaction marker is present. I test
+the actual serialization behavior rather than assuming that the
+configuration is safe.
+
+### Request correlation
+
+Every request that reaches the Express application receives an internal
+UUID request identifier.
+
+The identifier is exposed to the client through:
+
+``` text
+X-Request-ID
+```
+
+and is included as `requestId` in the corresponding HTTP log entry. This
+allows a client-visible failure to be correlated with the server-side
+event that processed it.
+
+I currently generate the internal request ID myself and do not trust a
+client-supplied `X-Request-ID`. This prevents an external caller from
+controlling identifiers used by internal logs. A future trusted
+cross-service correlation design can distinguish internal propagation
+from arbitrary external input when service-to-service communication is
+implemented.
+
+### HTTP request logs
+
+The HTTP middleware records a completed-request event containing
+diagnostic metadata such as:
+
+``` json
+{
+  "service": "accounts-service",
+  "event": "http_request_completed",
+  "requestId": "<generated UUID>",
+  "method": "GET",
+  "path": "/health",
+  "statusCode": 200,
+  "durationMs": 5.204
+}
+```
+
+Request duration is measured with Node.js's monotonic high-resolution
+clock so wall-clock adjustments do not distort elapsed-time
+measurements.
+
+The middleware waits for the response `finish` event before recording
+the completed request. This makes the final HTTP status and elapsed time
+available to the log entry.
+
+### Logging tests
+
+Logging is tested through real Pino output captured in memory rather
+than by mocking `console.log`.
+
+The reusable test helper is kept under `__tests__/helpers/` because log
+capture is a testing concern and is not part of the production build.
+This also keeps normal test output quiet while exercising the same Pino
+configuration used by the service.
+
+The current logging tests cover structured JSON and service metadata,
+sensitive-value redaction, non-sensitive diagnostic context, request-ID
+creation and uniqueness, rejection of client-controlled request IDs,
+HTTP completion metadata, severity for 4xx and 5xx responses, and the
+absence of sensitive authentication values from HTTP logs.
+
+### Future centralized observability
+
+Local structured logging is the application foundation, not the final
+production observability system.
+
+When the services are deployed, I plan to define log retention and
+rotation and centralize logs so events from multiple microservices can
+be searched together. I also plan to add monitoring and alerts for
+meaningful operational and security conditions.
+
+Security-specific application events will be added alongside the
+authentication and API-protection features they describe. Examples
+include failed authentication attempts, invalid or revoked tokens,
+refresh-token reuse, rate-limit events, and rejected or invalid
+webhooks.
+
+Application logging complements infrastructure controls such as WAF,
+rate limiting, firewall restrictions, metrics, and alerts. It does not
+replace those controls.
+
 ## Testing
 
 I keep automated tests in `__tests__` directories and use descriptive
 `*.test.ts` filenames.
 
-The current accounts-service suite contains two test suites and eleven
-tests. All are passing locally.
+The current `accounts-service` suite contains five test suites and
+twenty-two tests. The `@mailshrimp/http` package adds one suite with
+three tests, for six suites and twenty-five passing tests
+repository-wide.
 
 `health.test.ts` uses Supertest against `createApp()` and verifies the
 actual HTTP status and response body of `GET /health` without opening a
-network port.
+network port. It also verifies that Express's `X-Powered-By` header is
+not exposed.
 
 `environment.test.ts` verifies the HTTP port configuration independently
 from server startup, including valid values, invalid values, defaults,
 and TCP boundary values.
+
+`logger.test.ts` verifies structured Pino output, service metadata,
+sensitive-value redaction, and preservation of non-sensitive diagnostic
+context.
+
+`request-context.test.ts` verifies request-ID creation, uniqueness, the
+response header, and the rule that an external client cannot choose the
+internal request identifier.
+
+`http-logger.test.ts` verifies request completion metadata, severity
+levels for 4xx and 5xx responses, correlation with the response request
+ID, duration logging, and the absence of sensitive authentication
+headers from HTTP logs.
 
 ### Jest and ESM
 
@@ -297,13 +563,17 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
+npm audit
 ```
 
 The root scripts delegate to npm workspaces, allowing each service or
 application to maintain its own implementation while still participating
 in repository-wide checks.
 
-For the current `accounts-service`, all four commands pass locally.
+The repository-wide type check, lint, tests, and production build all
+pass locally. The latest complete run contains six passing suites and
+twenty-five passing tests. `npm audit` also reports zero known
+vulnerabilities in the currently installed dependency tree.
 
 The current production build contains:
 
@@ -312,11 +582,34 @@ services/accounts-service/dist/app.js
 services/accounts-service/dist/app.js.map
 services/accounts-service/dist/config/environment.js
 services/accounts-service/dist/config/environment.js.map
+services/accounts-service/dist/logging/logger.js
+services/accounts-service/dist/logging/logger.js.map
+services/accounts-service/dist/middleware/http-logger.js
+services/accounts-service/dist/middleware/http-logger.js.map
+services/accounts-service/dist/middleware/request-context.js
+services/accounts-service/dist/middleware/request-context.js.map
 services/accounts-service/dist/server.js
 services/accounts-service/dist/server.js.map
 ```
 
-The `dist/` directory is generated output and is not committed to Git.
+The shared HTTP package build produces JavaScript, declarations, source
+maps, and declaration maps under `packages/http/dist/`. Both workspace
+`dist/` directories are generated output and are not committed to Git.
+
+### Workspace build-order note
+
+The current root build delegates with
+`npm run build --workspaces --if-present`. In the latest run npm invoked
+`accounts-service` before `@mailshrimp/http`. The complete build still
+passed because TypeScript can resolve the shared package's public source
+types, and compiled runtime validation succeeds once
+`@mailshrimp/http/dist` exists.
+
+I do not treat that incidental workspace traversal order as a deployment
+contract. Before GitHub Actions or deployment depends on a clean build,
+I will make the dependency/build ordering explicit so a service is never
+started or packaged before the compiled runtime artifacts of its
+internal dependencies are available.
 
 ## Local runtime validation
 
@@ -332,15 +625,43 @@ http://127.0.0.1:3111/health
 
 returned the expected accounts-service health response.
 
+The real response also returned an `X-Request-ID` header. The running
+service emitted a structured `service_started` JSON event and a
+corresponding `http_request_completed` event containing the same request
+ID returned to the client, HTTP method, path, status `200`, and measured
+duration.
+
 This confirms the complete local path through the compiled JavaScript,
-Node.js runtime, TCP listener, Express application, and health route.
+Node.js runtime, TCP listener, Express application, request context,
+structured HTTP logging, and health route. That manual curl validation
+was performed before the later `X-Powered-By` hardening change; the
+current header behavior is covered by an automated regression test and
+can be rechecked manually after the next compiled runtime start.
 
 ## Security and repository hygiene
 
 The previous project repository must not be reused as trusted history
-because it was compromised. I am therefore building the new project
-locally first and will create a clean Git repository only after
-reviewing the project tree for secrets and unwanted artifacts.
+because it was compromised. I therefore rebuilt the new project locally
+and reviewed the source tree before initializing a new Git history.
+
+Before the first commit I checked sensitive filenames and extensions,
+reviewed the real project files outside generated directories, and
+scanned project content for common credential and secret patterns. No
+matching secrets were found in that review.
+
+Before preparing the current staged changes, I repeated repository
+hygiene checks. I checked tracked and untracked paths for common
+sensitive filename patterns and scanned source content for common
+private-key, AWS credential, password, API-key, and token patterns
+without printing candidate secret values. The only content-pattern
+matches were deliberate `password`, `access_token`, and `refresh_token`
+fixtures in logging/redaction tests. No private-key or AWS access-key
+pattern was found. I also ran `git diff --check` and
+`git diff --cached --check`; both completed without whitespace errors.
+
+The new local Git repository uses the `main` branch and began with the
+clean root commit `56d06c1` (`chore: initialize MailShrimp project`). A
+GitHub remote has not yet been configured.
 
 I never commit secrets such as:
 
@@ -437,8 +758,9 @@ The planned CI pipeline will use reproducible dependency installation
 and require type checking, linting, tests, and builds to succeed before
 deployment is allowed.
 
-The new Git history will be created only after the local source tree has
-been reviewed for secrets and generated or compromised artifacts.
+The new local Git history has been created after the source tree was
+reviewed for secrets and generated or compromised artifacts. GitHub
+Actions and the GitHub remote are still pending.
 
 ## Infrastructure documentation
 
@@ -489,13 +811,33 @@ accounts-service foundation:
 -   `GET /health`;
 -   environment-based and validated HTTP port configuration;
 -   default production-compatible port `3111`;
--   two passing test suites with eleven passing tests;
+-   the private `@mailshrimp/http` workspace package and public API;
+-   shared `HttpStatus` values using the `NAME_CODE` naming convention;
+-   clean-checkout TypeScript and Jest resolution for the shared
+    package;
+-   explicit prevention of Express `X-Powered-By` disclosure;
+-   Pino 10.3.1 structured JSON logging;
+-   centralized sensitive-field redaction;
+-   structured `service_started` logging;
+-   internally generated UUID request IDs;
+-   `X-Request-ID` response correlation;
+-   completed-request logging with method, path, status, and duration;
+-   severity separation for normal, 4xx, and 5xx HTTP responses;
+-   reusable in-memory logger support for tests;
+-   five passing `accounts-service` suites with twenty-two passing
+    tests;
+-   one passing `@mailshrimp/http` suite with three passing tests;
+-   twenty-five passing tests repository-wide;
 -   successful repository-wide type checking;
 -   successful repository-wide linting;
 -   successful repository-wide tests;
 -   successful production build;
+-   `npm audit` reporting zero known dependency vulnerabilities;
 -   successful execution of the compiled service;
--   successful real HTTP health request on port `3111`.
+-   successful real HTTP health request on port `3111`;
+-   successful runtime verification of startup and HTTP JSON logs;
+-   clean local Git repository initialized after a pre-commit secret and
+    artifact review.
 
 The next implementation work will continue incrementally, with tests and
 documentation updated alongside each meaningful behavior or

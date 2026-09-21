@@ -31,6 +31,8 @@
     "typescript-eslint": "^8.70.0"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "@mailshrimp/http": "^0.1.0",
+    "express": "^5.2.1",
+    "pino": "^10.3.1"
   }
 }

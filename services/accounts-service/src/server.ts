@@ -1,5 +1,6 @@
 import { createApp } from "./app.js";
 import { getPort } from "./config/environment.js";
+import { logger } from "./logging/logger.js";
 
 /**
  * I resolve the server port before creating the HTTP listener so invalid
@@ -25,5 +26,19 @@ const app = createApp();
  * which keeps the service easier to test and maintain.
  */
 app.listen(port, () => {
-  console.log(`Accounts service listening on port ${port}.`);
+  /**
+   * I use the structured application logger instead of console.log so startup
+   * events have the same machine-readable format and service metadata as the
+   * rest of the accounts-service logs.
+   *
+   * The event name makes this entry easy to search when investigating service
+   * restarts, deployments, or availability problems.
+   */
+  logger.info(
+    {
+      event: "service_started",
+      port,
+    },
+    "Accounts service started.",
+  );
 });

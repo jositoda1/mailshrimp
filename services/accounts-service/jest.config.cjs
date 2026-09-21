@@ -23,9 +23,25 @@ module.exports = {
 
   // NodeNext source imports use the .js extension that will exist after
   // compilation. During tests, Jest maps those imports back to TypeScript.
-  moduleNameMapper: {
-    "^(\\.{1,2}/.*)\\.js$": "$1",
-  },
+ moduleNameMapper: {
+  /**
+   * TypeScript ESM source files use NodeNext-compatible `.js` import
+   * specifiers. During tests, ts-jest executes the corresponding TypeScript
+   * source files, so I remove that suffix for relative imports.
+   */
+  "^(\\.{1,2}/.*)\\.js$": "$1",
+
+  /**
+   * I resolve internal MailShrimp workspace packages to their public source
+   * entry point during tests. This lets Jest use the same public package name
+   * as production code without requiring generated `dist` artifacts to exist
+   * before the test phase.
+   *
+   * I map only the package's public entry point. Tests must not import
+   * implementation files from packages/http/src directly.
+   */
+  "^@mailshrimp/http$": "<rootDir>/../../packages/http/src/index.ts",
+},
 
   // The accounts service runs in Node.js rather than a browser.
   testEnvironment: "node",
