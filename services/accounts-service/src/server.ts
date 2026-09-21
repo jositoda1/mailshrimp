@@ -1,6 +1,9 @@
+// services/accounts-service/src/server.ts
+
 import { createApp } from "./app.js";
 import {
   getAuthenticationSecrets,
+  getAuthenticationTokenLifetimes,
   getPort,
 } from "./config/environment.js";
 import { logger } from "./logging/logger.js";
@@ -23,6 +26,21 @@ const port = getPort();
  * be written to application, CI, or process-manager logs.
  */
 getAuthenticationSecrets();
+
+/**
+ * Token lifetimes are also validated during startup.
+ *
+ * I keep these values configurable through the environment, but configuration
+ * flexibility must not allow malformed or out-of-policy values to reach the
+ * token-signing layer. Missing values use the documented defaults, while a
+ * configured invalid value causes startup to fail immediately.
+ *
+ * The validated lifetimes are not consumed here yet because authentication
+ * HTTP routes are not wired into the application. When that integration is
+ * added, the configuration layer will provide these validated values to the
+ * token service rather than allowing the token service to read process.env.
+ */
+getAuthenticationTokenLifetimes();
 
 /**
  * I create the Express application through createApp() instead of configuring
@@ -49,7 +67,8 @@ app.listen(port, () => {
    * The event name makes this entry easy to search when investigating service
    * restarts, deployments, or availability problems.
    *
-   * Authentication secrets are intentionally absent from this log entry.
+   * Authentication secrets and other authentication configuration are
+   * intentionally absent from this log entry.
    */
   logger.info(
     {

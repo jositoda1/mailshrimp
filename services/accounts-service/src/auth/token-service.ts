@@ -2,11 +2,6 @@
 
 import { SignJWT, jwtVerify } from "jose";
 
-import {
-  ACCESS_TOKEN_TTL_SECONDS,
-  REFRESH_TOKEN_TTL_SECONDS,
-} from "./token-config.js";
-
 /**
  * Token types supported by the accounts service.
  *
@@ -37,6 +32,22 @@ export interface AuthenticationTokenClaims {
 export interface TokenServiceSecrets {
   accessTokenSecret: string;
   refreshTokenSecret: string;
+}
+
+/**
+ * Token lifetimes required by the token service.
+ *
+ * I inject validated lifetimes instead of importing fixed global values. This
+ * lets each deployment configure its authentication policy through the
+ * environment without coupling token cryptography to process.env.
+ *
+ * The property names include the unit explicitly because JWT expiration uses
+ * seconds while other authentication components, such as cookies, may use
+ * milliseconds.
+ */
+export interface TokenServiceLifetimes {
+  accessTokenTtlSeconds: number;
+  refreshTokenTtlSeconds: number;
 }
 
 /**
@@ -72,11 +83,19 @@ function encodeSecret(secret: string): Uint8Array {
  * This prevents one token class from being verified with the other class's
  * signing credential.
  *
+ * Secrets and token lifetimes are injected independently because they represent
+ * different configuration concerns: secrets are cryptographic credentials,
+ * while lifetimes are authentication policy. Both are validated by the
+ * configuration layer before reaching this service.
+ *
  * If token verification later needs to cross independently deployed trust
  * boundaries, I can revisit this decision and move to asymmetric signing
  * without changing the HTTP authentication contract.
  */
-export function createTokenService(secrets: TokenServiceSecrets): TokenService {
+export function createTokenService(
+  secrets: TokenServiceSecrets,
+  lifetimes: TokenServiceLifetimes,
+): TokenService {
   const accessTokenKey = encodeSecret(secrets.accessTokenSecret);
   const refreshTokenKey = encodeSecret(secrets.refreshTokenSecret);
 
@@ -141,7 +160,7 @@ export function createTokenService(secrets: TokenServiceSecrets): TokenService {
         accountId,
         "access",
         accessTokenKey,
-        ACCESS_TOKEN_TTL_SECONDS,
+        lifetimes.accessTokenTtlSeconds,
       );
     },
 
@@ -150,7 +169,7 @@ export function createTokenService(secrets: TokenServiceSecrets): TokenService {
         accountId,
         "refresh",
         refreshTokenKey,
-        REFRESH_TOKEN_TTL_SECONDS,
+        lifetimes.refreshTokenTtlSeconds,
       );
     },
 
