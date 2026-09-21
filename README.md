@@ -17,8 +17,11 @@ The first active backend service is `accounts-service`. Its Express
 foundation, health endpoint, executable server entry point, validated
 environment configuration, structured logging, HTTP request correlation,
 shared HTTP status package integration, authentication configuration,
-JWT token service, tests, linting, type checking, and production build
-are implemented and passing locally.
+JWT token service, configurable token lifetimes, refresh-session persistence
+
+contracts, tests, linting, type checking, and production build are implemented
+
+and passing locally.
 
 The clean repository is published to the new GitHub repository. I do not
 reuse the compromised repository or its history. New application work is
@@ -352,7 +355,10 @@ services/accounts-service/
 ├── __tests__/
 │   ├── helpers/
 │   │   └── test-logger.ts
+│   ├── auth-session-repository.test.ts
+
 │   ├── environment.test.ts
+
 │   ├── health.test.ts
 │   ├── http-logger.test.ts
 │   ├── logger.test.ts
@@ -361,7 +367,17 @@ services/accounts-service/
 │   └── token-service.test.ts
 ├── src/
 │   ├── auth/
+
+│   │   ├── session/
+
+│   │   │   ├── auth-session-repository.ts
+
+│   │   │   ├── auth-session.ts
+
+│   │   │   └── in-memory-auth-session-repository.ts
+
 │   │   ├── token-config.ts
+
 │   │   └── token-service.ts
 │   ├── config/
 │   │   └── environment.ts
@@ -714,13 +730,17 @@ descriptive
 
 `*.test.ts` filenames.
 
-The current `accounts-service` suite contains five test suites and
+The current `accounts-service` suite contains eight test suites and 87
 
-twenty-two tests. The `@mailshrimp/http` package adds one suite with
+passing tests. The `@mailshrimp/http` package adds one suite with three
 
-three tests, for six suites and twenty-five passing tests
+tests, for nine suites and 90 passing tests repository-wide. The
 
-repository-wide.
+refresh-session repository suite contributes 13 tests that define the
+
+expected persistence and atomic-rotation behavior before the production
+
+SQL repository is introduced.
 
 `health.test.ts` uses Supertest against `createApp()` and verifies the
 
@@ -836,11 +856,13 @@ in repository-wide checks.
 
 The repository-wide type check, lint, tests, and production build all
 
-pass locally. The latest complete run contains six passing suites and
+pass locally. The latest complete run contains nine passing suites and
 
-twenty-five passing tests. `npm audit` also reports zero known
+90 passing tests: 87 in `accounts-service` and 3 in `@mailshrimp/http`.
 
-vulnerabilities in the currently installed dependency tree.
+`npm audit` also reports zero known vulnerabilities in the currently
+
+installed dependency tree.
 
 The current production build contains:
 
@@ -857,6 +879,32 @@ services/accounts-service/dist/auth/token-config.js.map
 services/accounts-service/dist/auth/token-service.js
 
 services/accounts-service/dist/auth/token-service.js.map
+
+
+
+services/accounts-service/dist/auth/session/auth-session.js
+
+
+
+services/accounts-service/dist/auth/session/auth-session.js.map
+
+
+
+services/accounts-service/dist/auth/session/auth-session-repository.js
+
+
+
+services/accounts-service/dist/auth/session/auth-session-repository.js.map
+
+
+
+services/accounts-service/dist/auth/session/in-memory-auth-session-repository.js
+
+
+
+services/accounts-service/dist/auth/session/in-memory-auth-session-repository.js.map
+
+
 
 services/accounts-service/dist/config/environment.js
 
@@ -1011,11 +1059,13 @@ pattern was found. I also ran `git diff --check` and
 
 `git diff --cached --check`; both completed without whitespace errors.
 
-The new local Git repository uses the `main` branch and began with the
+The new Git repository uses the `main` branch and began with the clean
 
-clean root commit `56d06c1` (`chore: initialize MailShrimp project`). A
+root commit `56d06c1` (`chore: initialize MailShrimp project`). The clean
 
-GitHub remote has not yet been configured.
+history is published to the new GitHub repository, and `main` tracks
+
+`origin/main`. I do not reuse the compromised repository or its history.
 
 I never commit secrets such as:
 
@@ -1047,10 +1097,15 @@ local artifacts.
 
 ## Authentication
 
-Authentication is being implemented incrementally. The configuration and
-JWT token-service foundations are implemented; registration, login,
-password hashing, refresh endpoints, refresh-token persistence/rotation,
-logout, and authenticated business routes are still planned.
+Authentication is being implemented incrementally. The configuration, JWT
+
+token service, configurable token lifetimes, and refresh-session persistence
+
+contract foundations are implemented. Registration, login, password hashing,
+
+refresh HTTP endpoints, the production database repository, logout, and
+
+authenticated business routes are still planned.
 
 The intended end-to-end model uses short-lived access tokens,
 longer-lived rotating refresh tokens, Secure and HttpOnly refresh-token
@@ -1074,6 +1129,52 @@ invalid login, password verification, valid access tokens, expired
 access with valid refresh, expired refresh, revoked refresh,
 refresh-token rotation and reuse, logout, and simultaneous `401`
 behavior with automated tests.
+
+## Refresh-session persistence foundation
+
+I am implementing refresh-token security as server-side session state rather than relying on signed refresh JWTs alone. A valid JWT signature proves that MailShrimp issued a token, but it does not by itself provide immediate logout, rotation, revocation, or reliable reuse detection after a token is stolen.
+
+The current foundation lives under `services/accounts-service/src/auth/session/`. `AuthSession` models persisted refresh-session state independently from JWT and Sequelize implementation details. The account identifier remains a number because the original MailShrimp relational account model uses an integer primary key. The session has its own stable `id`, while `tokenId` is intended to correspond to the refresh JWT `jti`. I keep these identities separate: `sub` identifies the authenticated account, while `jti`/`tokenId` identifies one particular refresh credential/session. The current JWT token service does not issue `jti` yet; that wiring remains part of the refresh-flow work.
+
+I never persist access tokens in the authentication-session store. Normal API requests are intended to validate short-lived access tokens cryptographically, without an authentication-session database lookup on every request. Database session state is reserved for refresh, logout, revocation, reuse handling, and other security-sensitive session operations.
+
+`AuthSession` includes a one-way `tokenHash` field because the production repository must not store a raw refresh token. The exact hashing construction is intentionally not finalized yet; I will select it together with the actual refresh-token format and threat model rather than treating a naive hash of the full JWT as a completed security design. Access tokens, passwords, raw refresh tokens, cookies, and signing secrets do not belong in this repository.
+
+Revoked sessions are retained instead of immediately deleted. `revokedAt` records consumption/revocation and `replacedByTokenId` records the immediate replacement created during rotation. This retained state allows a later use of an already-consumed refresh credential to be distinguished from an unknown token. The final token-family model and containment policy after confirmed reuse are still design work; I have not yet committed to a `familyId` representation or to the exact descendant/family revocation rule. Multiple devices will be supported by allowing independent sessions rather than forcing one refresh credential per account.
+
+### Repository boundary and atomic rotation
+
+`AuthSessionRepository` is an application/domain-facing persistence contract. I keep it independent from Sequelize so authentication behavior can be tested without MySQL and so ORM details do not become authentication rules. The production implementation is still planned for the relational accounts/auth data store. The original Sequelize/MySQL design remains relevant, but the concrete production schema and repository implementation are not yet complete.
+
+Refresh rotation is a single repository operation rather than a caller-managed `find` followed by `revoke` and `create`. Exactly one concurrent use of an active refresh session may rotate it. The future relational implementation must enforce that property at the database level with a transaction, locking, or an equivalent atomic conditional operation. Application timing checks are not sufficient.
+
+The in-memory repository serializes mutations only to model this contract in tests. Its queue is not the production concurrency mechanism and must not be copied as a substitute for database atomicity. The repository also returns defensive copies so callers cannot mutate stored state indirectly, including mutable `Date` objects.
+
+The current rotation result distinguishes `rotated`, `not_found`, `already_revoked`, and `expired`. An already-revoked session is deliberately a security-relevant result because later authentication-service logic can treat it as possible refresh-token replay/reuse rather than as an ordinary missing record. Rotation also rejects a replacement associated with another account, which protects the account/session invariant inside the persistence boundary.
+
+### Account ownership and authorization
+
+An account ID is an identifier, not a secret and not an authorization proof. JWT signatures prevent a caller from changing a signed `sub` without invalidating the token, but authenticated identity and resource authorization remain separate checks. Protected HTTP middleware will validate the access token before controller/business logic and establish trusted authenticated account context.
+
+Client-supplied resource IDs may identify the requested resource but must never establish ownership. Account-owned resources will be queried or mutated with the authenticated account constraint included in the operation, for example by matching both the resource ID and owner account ID. This avoids treating a guessable ID as permission and is the core defense against IDOR/BOLA mistakes. `revokeAllForAccount()` likewise expects an account ID obtained from trusted authenticated server context, not an arbitrary client value used as authorization.
+
+### Refresh-session tests
+
+`auth-session-repository.test.ts` contains 13 tests. They verify creation/retrieval, unknown-token behavior, defensive copying, duplicate token identifier rejection, successful rotation, already-consumed-token detection, expired and unknown rotation outcomes, cross-account rotation rejection, concurrent rotation, specific-session revocation, idempotent revocation, and account-scoped bulk revocation.
+
+The concurrency test starts two rotations of the same active session without waiting for either to finish. Exactly one must return `rotated`, the other must observe `already_revoked`, and only the winning replacement may be persisted. This is a behavioral specification for the future SQL implementation, not proof that an in-memory JavaScript queue provides production database safety.
+
+### Remaining authentication security work
+
+The session repository is a foundation, not a complete authentication flow. I still need to implement the production relational repository, refresh JWT `jti` issuance/verification, refresh-token hashing/lookup semantics, atomic service-level rotation, cookie transport, CSRF protection, logout, reuse containment, and authenticated access middleware. A refresh token must never be accepted as an access token.
+
+For browser refresh tokens I intend to use `HttpOnly` and `Secure`; final `SameSite`, `Path`, domain, and CSRF behavior will be derived from the actual frontend/API deployment topology. `HttpOnly` limits JavaScript access to the cookie but does not itself prevent CSRF.
+
+Brute-force protection will be layered rather than based only on an IP address. Login, refresh, and password-recovery flows will use generic authentication responses where appropriate and rate/backoff controls by origin plus account/identifier context. I do not want those counters to create unnecessary MySQL writes on every attempt; Redis is a possible distributed counter/limiter store if the deployment needs it, but I will not introduce another database technology without a concrete operational reason.
+
+Security events will use structured Pino logging rather than a relational INSERT for every request. Planned events include successful/failed login, refresh reuse, session revocation, and rate limiting. Logs must not contain passwords, raw tokens, cookies, signing secrets, or other credentials, and privacy/retention requirements apply to identifiers such as email addresses and IP information.
+
+Password hashing will be selected separately from JWT/session persistence. I will evaluate Argon2id against the existing bcrypt-based project data and define a migration strategy before implementing registration/login. If compatibility with existing bcrypt hashes is required, a possible migration is to verify the legacy hash and rehash with the selected policy after a successful login; that remains planned rather than implemented behavior.
 
 ## Email event statistics plan
 
@@ -1378,11 +1479,18 @@ milliseconds. This proves that cookie lifetime calculation is dynamic
 rather than accidentally fixed to the seven-day default.
 
 During the configurable-lifetime feature work, the focused
+
 `environment.test.ts` run passed 42 tests and the focused
-`token-config.test.ts` run passed 7 tests. Repository-wide quality gates
-are still required before this feature can be committed and submitted
-for review. The Jest VM Modules experimental warning remains known and
-non-failing.
+
+`token-config.test.ts` run passed 7 tests. That feature was subsequently
+
+validated by the complete local gates and GitHub pull-request CI, then
+
+squash-merged through Pull Request #3. Its post-merge `main` CI run also
+
+completed successfully. The Jest VM Modules experimental warning remains
+
+known and non-failing.
 
 ## Merge policy and mandatory quality gates
 
@@ -1481,9 +1589,16 @@ issue tokens. That decision will be made when the service-to-service
 authentication boundary is implemented.
 
 Refresh-token rotation and revocation are not implemented by this JWT
-service alone. The refresh flow will require server-side session/token
-state and reuse protection; a token identifier such as `jti` can be
-introduced as part of that design when the persistence model is defined.
+
+service alone. The refresh-session persistence contract now models
+
+server-side state and expects `tokenId` to correspond to a future refresh
+
+JWT `jti`, but the current token service does not issue `jti` yet. That
+
+claim and the complete refresh flow will be wired deliberately with the
+
+production persistence and rotation service.
 
 ### JWT token-service tests
 
@@ -1507,11 +1622,19 @@ modification is rejected. The expiration test creates an already-expired
 token with the trusted key so expiration validation is tested
 independently from signature failure.
 
-The previous merged authentication-token feature passed the complete
-repository quality gates with 47 tests across eight suites and
-`npm audit` reporting zero known dependency vulnerabilities. The current
-configurable-lifetime work must pass the complete quality gates again
-before it can be committed, pushed, or merged.
+The authentication-token feature and configurable-lifetime feature have
+
+both been merged after their required quality gates. The current
+
+refresh-session persistence feature has also completed its local gates:
+
+90 tests across nine suites pass, type checking, linting, and production
+
+build pass, and `npm audit` reports zero known dependency vulnerabilities.
+
+The feature still requires commit/push, a pull request, and green PR CI
+
+before it can be merged.
 
 ## Infrastructure documentation
 
@@ -1567,53 +1690,14 @@ GitHub, CI/CD, or deployment.
 
 ## Current progress
 
-The authentication-token service and mandatory green-CI merge policy are
-already merged into `main`. Pull Request #1 introduced the JWT token
-service, and Pull Request #2 documented the rule that pull-request CI
-must be green before a squash merge. The post-merge CI run on `main` was
-green after both completed changes.
+The authentication-token service, mandatory green-CI merge policy, and configurable token-lifetime feature are already merged into `main`. Pull Request #1 introduced the JWT token service, Pull Request #2 documented the mandatory green-PR-CI policy, and Pull Request #3 made authentication token lifetimes deployment-configurable. Their required CI checks and post-merge `main` validation completed successfully.
 
-The current feature branch is `feat/auth-session`. Before implementing
-the database-backed authentication-session and refresh-rotation layer, I
-am making token lifetimes deployment-configurable so later session
-behavior has one validated source of authentication timing policy.
+The current feature branch is `feat/auth-session-persistence`. I am building the server-side refresh-session persistence boundary before wiring refresh HTTP endpoints or committing to a concrete SQL schema. The current work adds `AuthSession`, the ORM-independent `AuthSessionRepository` contract, an in-memory behavioral implementation, and 13 repository tests.
 
-The current uncommitted feature work includes:
+The implemented foundation covers session creation/lookup, defensive state copying, unique token identifiers, absolute expiration checks, explicit revoked state, replacement linkage, atomic rotation semantics, detection of a previously consumed session, cross-account rotation protection, idempotent single-session revocation, and account-scoped bulk revocation. The concurrency test requires exactly one of two simultaneous rotations of the same session to succeed.
 
--   `ACCESS_TOKEN_TTL_SECONDS` and `REFRESH_TOKEN_TTL_SECONDS` in the
-    public `.env.example` contract;
--   15-minute and 7-day defaults with explicit bounded policy ranges;
--   strict base-10 integer parsing and fail-fast environment validation;
--   startup validation of token lifetimes before the HTTP listener
-    opens;
--   dependency-injected access and refresh lifetimes in the JWT token
-    service;
--   dynamic refresh-cookie `maxAge` calculation from the effective
-    refresh TTL;
--   focused tests for environment parsing, token policy, cookie
-    synchronization, and custom JWT lifetimes; and
--   English source/test comments documenting the security and
-    architectural rationale.
+The complete local quality gates for the current feature are green: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` pass; the repository has 90 passing tests across nine suites; and `npm audit` reports zero known dependency vulnerabilities. I also reviewed the intended files for whitespace and secret hygiene. These local results do not replace pull-request CI.
 
-The focused tests completed so far are green: `token-service.test.ts`
-passed 13 tests, `environment.test.ts` passed 42 tests, and
-`token-config.test.ts` passed 7 tests. Repository-wide TypeScript
-checking also passed after the runtime wiring changes. These focused
-results do not replace the mandatory final local quality gates.
+Before this feature can be merged, I still commit and push only the reviewed files, open a pull request to `main`, wait for GitHub Actions, and explicitly confirm zero failing and zero pending required checks. Only then do I squash merge and delete the feature branch, followed by verification that the post-merge `main` CI run is green.
 
-Before this branch can be committed or pushed, I still run the complete
-local sequence: `npm run typecheck`, `npm run lint`, `npm test`,
-`npm run build`, and `npm audit`, followed by Git status/diff and
-secret-hygiene review. After the branch is pushed, the pull request must
-reach zero failing and zero pending required checks before squash merge,
-and the post-merge `main` CI run must also be green.
-
-Registration/login persistence, password hashing, database-backed
-refresh-token rotation/revocation and reuse detection, authenticated
-routes, the remaining backend services, frontend implementation, and
-full frontend/API integration remain future application work. The
-original Sequelize-based MailShrimp persistence design remains relevant
-reference material for the upcoming database layer; JWT cryptography
-itself remains intentionally independent from the ORM. Continuous
-deployment and Lightsail deployment remain intentionally deferred until
-the application is ready.
+The production relational auth-session repository, refresh JWT `jti` wiring, final refresh-token hash/lookup design, token-family reuse containment, refresh and logout endpoints, authenticated middleware, registration/login persistence, password hashing, brute-force controls, remaining backend services, frontend, and full frontend/API integration remain future application work. Continuous deployment and Lightsail deployment remain intentionally deferred until the application is ready.
