@@ -34,6 +34,7 @@
   "dependencies": {
     "@mailshrimp/http": "^0.1.0",
     "express": "^5.2.1",
+    "jose": "^6.2.12",
     "pino": "^10.3.1"
   }
 }
