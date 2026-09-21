@@ -596,20 +596,39 @@ The shared HTTP package build produces JavaScript, declarations, source
 maps, and declaration maps under `packages/http/dist/`. Both workspace
 `dist/` directories are generated output and are not committed to Git.
 
-### Workspace build-order note
+### Deterministic workspace build order
 
-The current root build delegates with
-`npm run build --workspaces --if-present`. In the latest run npm invoked
-`accounts-service` before `@mailshrimp/http`. The complete build still
-passed because TypeScript can resolve the shared package's public source
-types, and compiled runtime validation succeeds once
-`@mailshrimp/http/dist` exists.
+I explicitly orchestrate the root production build so internal shared
+packages are compiled before services that depend on their runtime
+JavaScript:
 
-I do not treat that incidental workspace traversal order as a deployment
-contract. Before GitHub Actions or deployment depends on a clean build,
-I will make the dependency/build ordering explicit so a service is never
-started or packaged before the compiled runtime artifacts of its
-internal dependencies are available.
+``` json
+"build": "npm run build:packages && npm run build:services",
+"build:packages": "npm run build --workspace @mailshrimp/http",
+"build:services": "npm run build --workspace @mailshrimp/accounts-service"
+```
+
+I chose explicit workspace names at this stage because the repository
+currently has one shared package and one active service. This makes the
+dependency order obvious and avoids relying on npm's incidental
+workspace traversal order. I can evolve the orchestration deliberately
+when additional packages and services are introduced.
+
+The `&&` operator is intentional: `build:services` runs only if
+`build:packages` succeeds. This prevents a service build from continuing
+after a required shared-package build has failed.
+
+I validated this behavior from a clean generated-output state. After
+removing both `packages/http/dist` and `services/accounts-service/dist`,
+I confirmed that neither directory existed, ran the root
+`npm run build`, observed `@mailshrimp/http` compile before
+`@mailshrimp/accounts-service`, and then confirmed that both `dist`
+directories had been recreated successfully.
+
+I do not use a glob-based workspace selector such as
+`--workspace=./packages/*` because the current npm 11 environment
+rejected that selector. Explicit workspace names therefore form the
+current build contract.
 
 ## Local runtime validation
 
@@ -832,6 +851,9 @@ accounts-service foundation:
 -   successful repository-wide linting;
 -   successful repository-wide tests;
 -   successful production build;
+-   deterministic package-before-service root build orchestration;
+-   successful clean-output build validation with both workspace `dist/`
+    directories recreated in dependency order;
 -   `npm audit` reporting zero known dependency vulnerabilities;
 -   successful execution of the compiled service;
 -   successful real HTTP health request on port `3111`;

@@ -14,7 +14,9 @@
     "npm": ">=11.0.0"
   },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:packages && npm run build:services",
+    "build:packages": "npm run build --workspace @mailshrimp/http",
+    "build:services": "npm run build --workspace @mailshrimp/accounts-service",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
