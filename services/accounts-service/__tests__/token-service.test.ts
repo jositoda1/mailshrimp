@@ -2,10 +2,6 @@
 
 import { SignJWT, decodeJwt } from "jose";
 
-import {
-  ACCESS_TOKEN_TTL_SECONDS,
-  REFRESH_TOKEN_TTL_SECONDS,
-} from "../src/auth/token-config.js";
 import { createTokenService } from "../src/auth/token-service.js";
 
 /**
@@ -23,17 +19,36 @@ const REFRESH_TOKEN_SECRET =
 const ACCOUNT_ID = "account-123";
 
 /**
+ * These are explicit test lifetimes rather than imports from token-config.ts.
+ *
+ * I inject lifetimes into the token service because this test suite verifies
+ * token-service behavior, not environment configuration. Separate environment
+ * tests verify defaults, parsing, and policy limits.
+ */
+const TEST_ACCESS_TOKEN_TTL_SECONDS = 900;
+const TEST_REFRESH_TOKEN_TTL_SECONDS = 604800;
+
+/**
  * Creates a fresh token service for each test.
  *
- * Keeping construction explicit makes it clear which credentials are trusted
- * by the verifier and avoids sharing mutable authentication state between
- * tests.
+ * Keeping construction explicit makes it clear which credentials and token
+ * lifetimes are trusted by the service and avoids sharing mutable
+ * authentication state between tests.
  */
-function createTestTokenService(): ReturnType<typeof createTokenService> {
-  return createTokenService({
-    accessTokenSecret: ACCESS_TOKEN_SECRET,
-    refreshTokenSecret: REFRESH_TOKEN_SECRET,
-  });
+function createTestTokenService(
+  accessTokenTtlSeconds = TEST_ACCESS_TOKEN_TTL_SECONDS,
+  refreshTokenTtlSeconds = TEST_REFRESH_TOKEN_TTL_SECONDS,
+): ReturnType<typeof createTokenService> {
+  return createTokenService(
+    {
+      accessTokenSecret: ACCESS_TOKEN_SECRET,
+      refreshTokenSecret: REFRESH_TOKEN_SECRET,
+    },
+    {
+      accessTokenTtlSeconds,
+      refreshTokenTtlSeconds,
+    },
+  );
 }
 
 describe("authentication token service", () => {
@@ -61,7 +76,7 @@ describe("authentication token service", () => {
     });
   });
 
-  it("signs access tokens with the expected lifetime", async () => {
+  it("signs access tokens with the injected lifetime", async () => {
     const tokenService = createTestTokenService();
     const token = await tokenService.createAccessToken(ACCOUNT_ID);
 
@@ -77,10 +92,10 @@ describe("authentication token service", () => {
     expect(typeof payload.iat).toBe("number");
     expect(typeof payload.exp).toBe("number");
 
-    expect(payload.exp! - payload.iat!).toBe(ACCESS_TOKEN_TTL_SECONDS);
+    expect(payload.exp! - payload.iat!).toBe(TEST_ACCESS_TOKEN_TTL_SECONDS);
   });
 
-  it("signs refresh tokens with the expected lifetime", async () => {
+  it("signs refresh tokens with the injected lifetime", async () => {
     const tokenService = createTestTokenService();
     const token = await tokenService.createRefreshToken(ACCOUNT_ID);
 
@@ -91,7 +106,43 @@ describe("authentication token service", () => {
     expect(typeof payload.iat).toBe("number");
     expect(typeof payload.exp).toBe("number");
 
-    expect(payload.exp! - payload.iat!).toBe(REFRESH_TOKEN_TTL_SECONDS);
+    expect(payload.exp! - payload.iat!).toBe(TEST_REFRESH_TOKEN_TTL_SECONDS);
+  });
+
+  it("uses a custom injected access-token lifetime", async () => {
+    const customAccessTokenTtlSeconds = 300;
+    const tokenService = createTestTokenService(
+      customAccessTokenTtlSeconds,
+      TEST_REFRESH_TOKEN_TTL_SECONDS,
+    );
+
+    const token = await tokenService.createAccessToken(ACCOUNT_ID);
+
+    await expect(tokenService.verifyAccessToken(token)).resolves.toBeDefined();
+
+    const payload = decodeJwt(token);
+
+    expect(typeof payload.iat).toBe("number");
+    expect(typeof payload.exp).toBe("number");
+    expect(payload.exp! - payload.iat!).toBe(customAccessTokenTtlSeconds);
+  });
+
+  it("uses a custom injected refresh-token lifetime", async () => {
+    const customRefreshTokenTtlSeconds = 86400;
+    const tokenService = createTestTokenService(
+      TEST_ACCESS_TOKEN_TTL_SECONDS,
+      customRefreshTokenTtlSeconds,
+    );
+
+    const token = await tokenService.createRefreshToken(ACCOUNT_ID);
+
+    await expect(tokenService.verifyRefreshToken(token)).resolves.toBeDefined();
+
+    const payload = decodeJwt(token);
+
+    expect(typeof payload.iat).toBe("number");
+    expect(typeof payload.exp).toBe("number");
+    expect(payload.exp! - payload.iat!).toBe(customRefreshTokenTtlSeconds);
   });
 
   it("does not accept an access token as a refresh token", async () => {
@@ -190,7 +241,7 @@ describe("authentication token service", () => {
     );
   });
 
-    it("rejects an expired access token", async () => {
+  it("rejects an expired access token", async () => {
     const tokenService = createTestTokenService();
     const accessKey = new TextEncoder().encode(ACCESS_TOKEN_SECRET);
 

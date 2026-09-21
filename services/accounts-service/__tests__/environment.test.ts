@@ -1,8 +1,17 @@
 // services/accounts-service/__tests__/environment.test.ts
 
 import {
+  DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+  DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
+  MAX_ACCESS_TOKEN_TTL_SECONDS,
+  MAX_REFRESH_TOKEN_TTL_SECONDS,
+  MIN_ACCESS_TOKEN_TTL_SECONDS,
+  MIN_REFRESH_TOKEN_TTL_SECONDS,
+} from "../src/auth/token-config.js";
+import {
   DEFAULT_PORT,
   getAuthenticationSecrets,
+  getAuthenticationTokenLifetimes,
   getPort,
   MIN_AUTH_SECRET_LENGTH,
 } from "../src/config/environment.js";
@@ -145,5 +154,167 @@ describe("authentication secret configuration", () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).not.toContain(invalidSecret);
     }
+  });
+});
+
+describe("authentication token lifetime configuration", () => {
+  /**
+   * I keep safe application defaults so a deployment does not need to provide
+   * lifetime variables unless it intentionally wants a different policy.
+   *
+   * Access tokens default to 15 minutes and refresh tokens default to 7 days.
+   */
+  it("uses the default token lifetimes when environment values are absent", () => {
+    expect(getAuthenticationTokenLifetimes(undefined, undefined)).toEqual({
+      accessTokenTtlSeconds: DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+      refreshTokenTtlSeconds: DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
+    });
+
+    expect(DEFAULT_ACCESS_TOKEN_TTL_SECONDS).toBe(900);
+    expect(DEFAULT_REFRESH_TOKEN_TTL_SECONDS).toBe(604800);
+  });
+
+  /**
+   * Deployment-specific authentication policy can override both defaults
+   * without requiring a source-code change or application rebuild.
+   */
+  it("uses valid token lifetimes provided by the environment", () => {
+    expect(getAuthenticationTokenLifetimes("300", "86400")).toEqual({
+      accessTokenTtlSeconds: 300,
+      refreshTokenTtlSeconds: 86400,
+    });
+  });
+
+  /**
+   * Each variable falls back independently. This matters during staged
+   * configuration changes where a deployment may override only one lifetime.
+   */
+  it("uses the access-token default when only the refresh lifetime is configured", () => {
+    expect(getAuthenticationTokenLifetimes(undefined, "86400")).toEqual({
+      accessTokenTtlSeconds: DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+      refreshTokenTtlSeconds: 86400,
+    });
+  });
+
+  it("uses the refresh-token default when only the access lifetime is configured", () => {
+    expect(getAuthenticationTokenLifetimes("300", undefined)).toEqual({
+      accessTokenTtlSeconds: 300,
+      refreshTokenTtlSeconds: DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
+    });
+  });
+
+  /**
+   * I explicitly protect both ends of the supported access-token range.
+   * The current policy allows access tokens from 1 minute through 1 hour.
+   */
+  it("accepts access-token lifetime boundary values", () => {
+    expect(
+      getAuthenticationTokenLifetimes(
+        String(MIN_ACCESS_TOKEN_TTL_SECONDS),
+        undefined,
+      ).accessTokenTtlSeconds,
+    ).toBe(MIN_ACCESS_TOKEN_TTL_SECONDS);
+
+    expect(
+      getAuthenticationTokenLifetimes(
+        String(MAX_ACCESS_TOKEN_TTL_SECONDS),
+        undefined,
+      ).accessTokenTtlSeconds,
+    ).toBe(MAX_ACCESS_TOKEN_TTL_SECONDS);
+  });
+
+  /**
+   * Refresh tokens have a separate range because their security role differs
+   * from short-lived access tokens. The current policy allows 1 hour through
+   * 30 days.
+   */
+  it("accepts refresh-token lifetime boundary values", () => {
+    expect(
+      getAuthenticationTokenLifetimes(
+        undefined,
+        String(MIN_REFRESH_TOKEN_TTL_SECONDS),
+      ).refreshTokenTtlSeconds,
+    ).toBe(MIN_REFRESH_TOKEN_TTL_SECONDS);
+
+    expect(
+      getAuthenticationTokenLifetimes(
+        undefined,
+        String(MAX_REFRESH_TOKEN_TTL_SECONDS),
+      ).refreshTokenTtlSeconds,
+    ).toBe(MAX_REFRESH_TOKEN_TTL_SECONDS);
+  });
+
+  /**
+   * Configured lifetimes must use an unambiguous base-10 integer format.
+   *
+   * I reject empty strings, signs, decimal values, scientific notation,
+   * whitespace, and arbitrary text instead of relying on Number() coercion.
+   */
+  it.each(["", "abc", "-1", "+300", "300.5", "1e3", " 300", "300 "])(
+    "rejects malformed access-token lifetime %j",
+    (configuredLifetime) => {
+      expect(() =>
+        getAuthenticationTokenLifetimes(configuredLifetime, undefined),
+      ).toThrow(
+        `Invalid ACCESS_TOKEN_TTL_SECONDS environment variable. Expected an integer between ${MIN_ACCESS_TOKEN_TTL_SECONDS} and ${MAX_ACCESS_TOKEN_TTL_SECONDS} seconds.`,
+      );
+    },
+  );
+
+  it.each(["", "abc", "-1", "+3600", "3600.5", "1e4", " 3600", "3600 "])(
+    "rejects malformed refresh-token lifetime %j",
+    (configuredLifetime) => {
+      expect(() =>
+        getAuthenticationTokenLifetimes(undefined, configuredLifetime),
+      ).toThrow(
+        `Invalid REFRESH_TOKEN_TTL_SECONDS environment variable. Expected an integer between ${MIN_REFRESH_TOKEN_TTL_SECONDS} and ${MAX_REFRESH_TOKEN_TTL_SECONDS} seconds.`,
+      );
+    },
+  );
+
+  /**
+   * Numeric values outside the supported security policy must fail
+   * configuration instead of being silently clamped or replaced by defaults.
+   */
+  it("rejects access-token lifetimes outside the supported range", () => {
+    expect(() =>
+      getAuthenticationTokenLifetimes(
+        String(MIN_ACCESS_TOKEN_TTL_SECONDS - 1),
+        undefined,
+      ),
+    ).toThrow("Invalid ACCESS_TOKEN_TTL_SECONDS environment variable.");
+
+    expect(() =>
+      getAuthenticationTokenLifetimes(
+        String(MAX_ACCESS_TOKEN_TTL_SECONDS + 1),
+        undefined,
+      ),
+    ).toThrow("Invalid ACCESS_TOKEN_TTL_SECONDS environment variable.");
+  });
+
+  it("rejects refresh-token lifetimes outside the supported range", () => {
+    expect(() =>
+      getAuthenticationTokenLifetimes(
+        undefined,
+        String(MIN_REFRESH_TOKEN_TTL_SECONDS - 1),
+      ),
+    ).toThrow("Invalid REFRESH_TOKEN_TTL_SECONDS environment variable.");
+
+    expect(() =>
+      getAuthenticationTokenLifetimes(
+        undefined,
+        String(MAX_REFRESH_TOKEN_TTL_SECONDS + 1),
+      ),
+    ).toThrow("Invalid REFRESH_TOKEN_TTL_SECONDS environment variable.");
+  });
+
+  /**
+   * A valid value for one token class must never hide an invalid value for the
+   * other. Any invalid configured authentication policy must fail as a whole.
+   */
+  it("rejects an invalid refresh lifetime when the access lifetime is valid", () => {
+    expect(() =>
+      getAuthenticationTokenLifetimes("300", "invalid"),
+    ).toThrow("Invalid REFRESH_TOKEN_TTL_SECONDS environment variable.");
   });
 });

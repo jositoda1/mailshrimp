@@ -8,11 +8,22 @@ microservices.
 
 ## Project status
 
-The project is currently in active local application development and validation. I develop and test changes locally before submitting them through GitHub CI, and I am intentionally postponing continuous deployment and Lightsail deployment work until the application is ready.
+The project is currently in active local application development and
+validation. I develop and test changes locally before submitting them
+through GitHub CI, and I am intentionally postponing continuous
+deployment and Lightsail deployment work until the application is ready.
 
-The first active backend service is `accounts-service`. Its Express foundation, health endpoint, executable server entry point, validated environment configuration, structured logging, HTTP request correlation, shared HTTP status package integration, authentication configuration, JWT token service, tests, linting, type checking, and production build are implemented and passing locally.
+The first active backend service is `accounts-service`. Its Express
+foundation, health endpoint, executable server entry point, validated
+environment configuration, structured logging, HTTP request correlation,
+shared HTTP status package integration, authentication configuration,
+JWT token service, tests, linting, type checking, and production build
+are implemented and passing locally.
 
-The clean repository is published to the new GitHub repository. I do not reuse the compromised repository or its history. New application work is developed on feature branches and is merged into `main` only after local quality gates and pull-request CI succeed.
+The clean repository is published to the new GitHub repository. I do not
+reuse the compromised repository or its history. New application work is
+developed on feature branches and is merged into `main` only after local
+quality gates and pull-request CI succeed.
 
 ## Architecture
 
@@ -45,7 +56,6 @@ mailshrimp/
 ├── package-lock.json
 
 └── README.md
-
 ```
 
 The planned backend services include:
@@ -90,7 +100,8 @@ The first shared package is `@mailshrimp/http`, located under
 
 `packages/http`. I chose a responsibility-specific package instead of
 
-reintroducing a generic `\_\_commons\_\_` directory because shared packages
+reintroducing a generic `\_\_commons\_\_` directory because shared
+packages
 
 should have a clear, stable purpose and must not become dumping grounds
 
@@ -103,7 +114,6 @@ entry point. Consumers import it as:
 ``` typescript
 
 import { HttpStatus } from "@mailshrimp/http";
-
 ```
 
 I do not import another package through relative paths such as
@@ -147,7 +157,6 @@ export enum HttpStatus {
   SERVICE_UNAVAILABLE_503 = 503,
 
 }
-
 ```
 
 I include the numeric HTTP code in each enum member name so the protocol
@@ -243,7 +252,6 @@ I use npm workspaces from the repository root:
   "packages/*"
 
 ]
-
 ```
 
 I use npm as the single package manager and keep the root
@@ -327,7 +335,6 @@ With NodeNext semantics, I write relative TypeScript imports using the
 ``` typescript
 
 import { createApp } from "./app.js";
-
 ```
 
 Jest maps those compiled-style relative imports back to the TypeScript
@@ -408,7 +415,6 @@ The accounts service currently implements:
 ``` text
 
 GET /health
-
 ```
 
 A successful response returns HTTP `200` with:
@@ -422,7 +428,6 @@ A successful response returns HTTP `200` with:
   "service": "accounts-service"
 
 }
-
 ```
 
 I keep this endpoint small and dependency-free so it can confirm that
@@ -446,7 +451,6 @@ I start the compiled service with:
 ``` bash
 
 npm start --workspace @mailshrimp/accounts-service
-
 ```
 
 The accounts service currently uses TCP port `3111` as its default
@@ -524,7 +528,6 @@ The shared logger configuration lives in:
 ``` text
 
 services/accounts-service/src/logging/logger.ts
-
 ```
 
 Every default log entry identifies the service as `accounts-service`.
@@ -590,7 +593,6 @@ The identifier is exposed to the client through:
 ``` text
 
 X-Request-ID
-
 ```
 
 and is included as `requestId` in the corresponding HTTP log entry. This
@@ -636,7 +638,6 @@ diagnostic metadata such as:
   "durationMs": 5.204
 
 }
-
 ```
 
 Request duration is measured with Node.js's monotonic high-resolution
@@ -657,7 +658,8 @@ Logging is tested through real Pino output captured in memory rather
 
 than by mocking `console.log`.
 
-The reusable test helper is kept under `\_\_tests\_\_/helpers/` because log
+The reusable test helper is kept under `\_\_tests\_\_/helpers/` because
+log
 
 capture is a testing concern and is not part of the production build.
 
@@ -707,7 +709,8 @@ replace those controls.
 
 ## Testing
 
-I keep automated tests in `\_\_tests\_\_` directories and use descriptive
+I keep automated tests in `\_\_tests\_\_` directories and use
+descriptive
 
 `*.test.ts` filenames.
 
@@ -770,7 +773,6 @@ The current Jest command runs through Node with:
 ``` text
 
 --experimental-vm-modules
-
 ```
 
 Node currently prints an `ExperimentalWarning` for VM Modules when the
@@ -824,7 +826,6 @@ npm test
 npm run build
 
 npm audit
-
 ```
 
 The root scripts delegate to npm workspaces, allowing each service or
@@ -876,7 +877,6 @@ services/accounts-service/dist/middleware/request-context.js.map
 services/accounts-service/dist/server.js
 
 services/accounts-service/dist/server.js.map
-
 ```
 
 The shared HTTP package build produces JavaScript, declarations, source
@@ -900,7 +900,6 @@ JavaScript:
 "build:packages": "npm run build --workspace @mailshrimp/http",
 
 "build:services": "npm run build --workspace @mailshrimp/accounts-service"
-
 ```
 
 I chose explicit workspace names at this stage because the repository
@@ -952,7 +951,6 @@ request to:
 ``` text
 
 http://127.0.0.1:3111/health
-
 ```
 
 returned the expected accounts-service health response.
@@ -1049,15 +1047,33 @@ local artifacts.
 
 ## Authentication
 
-Authentication is being implemented incrementally. The configuration and JWT token-service foundations are implemented; registration, login, password hashing, refresh endpoints, refresh-token persistence/rotation, logout, and authenticated business routes are still planned.
+Authentication is being implemented incrementally. The configuration and
+JWT token-service foundations are implemented; registration, login,
+password hashing, refresh endpoints, refresh-token persistence/rotation,
+logout, and authenticated business routes are still planned.
 
-The intended end-to-end model uses short-lived access tokens, longer-lived rotating refresh tokens, Secure and HttpOnly refresh-token cookies where appropriate, centralized frontend authentication/API handling, automatic refresh after an eligible `401`, retry of the original request after successful refresh, single-flight refresh behavior, and server-side refresh-token revocation/reuse protection.
+The intended end-to-end model uses short-lived access tokens,
+longer-lived rotating refresh tokens, Secure and HttpOnly refresh-token
+cookies where appropriate, centralized frontend authentication/API
+handling, automatic refresh after an eligible `401`, retry of the
+original request after successful refresh, single-flight refresh
+behavior, and server-side refresh-token revocation/reuse protection.
 
-Password hashing is separate from JWT handling. `jose` signs and verifies authentication tokens; it does not hash passwords. I will select and document the password-hashing implementation when registration/login persistence is implemented, rather than carrying a dependency forward only because the previous project used it.
+Password hashing is separate from JWT handling. `jose` signs and
+verifies authentication tokens; it does not hash passwords. I will
+select and document the password-hashing implementation when
+registration/login persistence is implemented, rather than carrying a
+dependency forward only because the previous project used it.
 
-Cookie domain, path, expiry, Secure, and SameSite settings will be finalized from the actual frontend/API deployment domains rather than guessed prematurely.
+Cookie domain, path, expiry, Secure, and SameSite settings will be
+finalized from the actual frontend/API deployment domains rather than
+guessed prematurely.
 
-Before considering authentication complete, I plan to cover valid and invalid login, password verification, valid access tokens, expired access with valid refresh, expired refresh, revoked refresh, refresh-token rotation and reuse, logout, and simultaneous `401` behavior with automated tests.
+Before considering authentication complete, I plan to cover valid and
+invalid login, password verification, valid access tokens, expired
+access with valid refresh, expired refresh, revoked refresh,
+refresh-token rotation and reuse, logout, and simultaneous `401`
+behavior with automated tests.
 
 ## Email event statistics plan
 
@@ -1091,7 +1107,8 @@ presented as exact human-read measurements.
 
 ## Development workflow
 
-I use a feature-branch workflow for new application changes. I do not merge unfinished work directly into `main`.
+I use a feature-branch workflow for new application changes. I do not
+merge unfinished work directly into `main`.
 
 ``` text
 main
@@ -1109,9 +1126,17 @@ main
         └── merge to main
 ```
 
-I develop and validate locally in VS Code first. Documentation is updated before the feature is submitted. The current CI workflow runs for pull requests targeting `main` and for pushes to `main`, so pushing a feature branch alone does not trigger the current CI workflow; opening the pull request does.
+I develop and validate locally in VS Code first. Documentation is
+updated before the feature is submitted. The current CI workflow runs
+for pull requests targeting `main` and for pushes to `main`, so pushing
+a feature branch alone does not trigger the current CI workflow; opening
+the pull request does.
 
-I do not deploy unfinished local changes directly to the production server. Bug fixes should include regression tests whenever a practical automated test can reproduce the defect. Continuous deployment and Lightsail deployment work are intentionally deferred until the application implementation and integration are ready.
+I do not deploy unfinished local changes directly to the production
+server. Bug fixes should include regression tests whenever a practical
+automated test can reproduce the defect. Continuous deployment and
+Lightsail deployment work are intentionally deferred until the
+application implementation and integration are ready.
 
 ## CI/CD
 
@@ -1150,7 +1175,6 @@ npm run lint
 npm test
 
 npm run build
-
 ```
 
 The build step uses the explicit package-before-service orchestration
@@ -1221,29 +1245,53 @@ signing, refresh-token rotation, or authenticated routes.
 
 ### Token lifetime policy
 
-I keep the initial token policy in
+I keep the token-lifetime defaults and supported security boundaries in
+`services/accounts-service/src/auth/token-config.ts`, while deployments
+can override the effective lifetimes through environment variables.
 
-`services/accounts-service/src/auth/token-config.ts`. Access tokens have
+The default access-token lifetime is 15 minutes (`900` seconds), and the
+supported range is 1 minute through 1 hour (`60` through `3600`
+seconds). The default refresh-token lifetime is 7 days (`604800`
+seconds), and the supported range is 1 hour through 30 days (`3600`
+through `2592000` seconds).
 
-a 15-minute lifetime and refresh tokens have a seven-day lifetime. The
+The public environment contract exposes `ACCESS_TOKEN_TTL_SECONDS` and
+`REFRESH_TOKEN_TTL_SECONDS`. I accept only unambiguous base-10 integer
+seconds. If either variable is absent, the corresponding documented
+default is used. If a variable is present but malformed or outside its
+supported range, configuration fails instead of silently replacing the
+invalid value with a default.
 
-refresh-token cookie lifetime is derived from the refresh-token
+I validate these values in
+`services/accounts-service/src/config/environment.ts`, alongside the
+other startup configuration. The executable server validates token
+lifetimes before opening its HTTP listener so a deployment with an
+invalid authentication policy fails fast rather than appearing healthy
+until a token is issued.
 
-lifetime, and the dedicated cookie name is `mailshrimp_refresh_token`.
+I inject the validated lifetimes into
+`services/accounts-service/src/auth/token-service.ts`. The token service
+does not read `process.env` and does not import fixed deployment
+lifetimes. I keep environment parsing in the configuration layer and
+token cryptography in the authentication layer.
 
-I keep these durations in version-controlled application code because
+The refresh-token cookie lifetime is derived dynamically from the
+effective refresh-token lifetime through
+`getRefreshTokenCookieMaxAgeMs()`. Browser cookie `maxAge` uses
+milliseconds while the authentication policy uses seconds, so deriving
+the value prevents an environment override from making the cookie and
+refresh JWT expire on different schedules. The dedicated cookie name
+remains `mailshrimp_refresh_token`.
 
-they are currently application security/session policy rather than
+Token lifetimes are configuration, not secrets. The local ignored `.env`
+may override them, while `.env.example` documents the defaults, units,
+accepted ranges, and fail-fast behavior without containing credentials.
 
-secrets. The seven-day lifetime does not mean a refresh token will
-
-remain reusable without controls for seven days. I will implement
-
-refresh-token rotation, server-side state/revocation, reuse handling,
-
-and final cookie attributes with the authentication flow. The intended
-
-production browser cookie is `HttpOnly` and `Secure`.
+The configured refresh lifetime does not mean a refresh token will
+remain reusable for that entire period without controls. I will
+implement refresh-token rotation, server-side state/revocation, reuse
+handling, and final cookie attributes with the authentication flow. The
+intended production browser cookie is `HttpOnly` and `Secure`.
 
 ### Authentication signing secrets
 
@@ -1311,41 +1359,43 @@ either authentication secret.
 
 ### Authentication configuration tests
 
-Tests cover token lifetimes, derived cookie lifetime, cookie name,
+The configuration tests cover the HTTP port, required signing
+credentials, minimum secret length, separation of access and refresh
+secrets, and protection against secret disclosure in configuration
+errors.
 
-required signing credentials, the minimum-length boundary, separation of
+The token-lifetime configuration tests additionally cover documented
+defaults, valid environment overrides, independent fallback when only
+one lifetime is configured, minimum and maximum boundaries, malformed
+decimal representations, values outside the supported ranges, and
+failure when one configured lifetime is invalid even if the other is
+valid.
 
-access and refresh secrets, and protection against secret disclosure in
+`token-config.test.ts` protects the policy defaults and boundaries
+separately from environment parsing. It also verifies both the default
+and a non-default refresh lifetime when converting seconds to cookie
+milliseconds. This proves that cookie lifetime calculation is dynamic
+rather than accidentally fixed to the seven-day default.
 
-configuration errors.
-
-After this foundation was added, I ran `npm run typecheck`,
-
-`npm run lint`, `npm test`, `npm run build`, and `npm audit`. All gates
-
-passed. The accounts service passed 33 tests across six suites and the
-
-shared HTTP package passed three tests in one suite, for 36 tests across
-
-seven suites in the repository. The root build compiled the shared HTTP
-
-package before the dependent accounts service, and `npm audit` reported
-
-zero known vulnerabilities. The Jest VM Modules experimental warning
-
-remains known and non-failing.
+During the configurable-lifetime feature work, the focused
+`environment.test.ts` run passed 42 tests and the focused
+`token-config.test.ts` run passed 7 tests. Repository-wide quality gates
+are still required before this feature can be committed and submitted
+for review. The Jest VM Modules experimental warning remains known and
+non-failing.
 
 ## Merge policy and mandatory quality gates
 
-I treat a green CI result as a mandatory precondition for merging any pull
-request into `main`. I do not merge first and inspect the CI result afterward.
+I treat a green CI result as a mandatory precondition for merging any
+pull request into `main`. I do not merge first and inspect the CI result
+afterward.
 
 For every code or documentation change, I use a dedicated feature or
-documentation branch. Before I commit and push that branch, I run the relevant
-local quality gates. For the current repository-wide workflow, the standard
-gates are:
+documentation branch. Before I commit and push that branch, I run the
+relevant local quality gates. For the current repository-wide workflow,
+the standard gates are:
 
-```powershell
+``` powershell
 npm run typecheck
 npm run lint
 npm test
@@ -1353,59 +1403,115 @@ npm run build
 npm audit
 ```
 
-After the local gates pass, I review the Git status and diff, verify that local
-secrets such as `.env` files are not staged, commit the intended files, push
-the branch, and open a pull request targeting `main`.
+After the local gates pass, I review the Git status and diff, verify
+that local secrets such as `.env` files are not staged, commit the
+intended files, push the branch, and open a pull request targeting
+`main`.
 
-The pull request must then complete the GitHub Actions `Quality gates` job
-successfully. I verify that there are zero failing and zero pending required
-checks before I run the merge command. Only after that confirmation do I use a
-squash merge:
+The pull request must then complete the GitHub Actions `Quality gates`
+job successfully. I verify that there are zero failing and zero pending
+required checks before I run the merge command. Only after that
+confirmation do I use a squash merge:
 
-```powershell
+``` powershell
 gh pr merge --squash --delete-branch
 ```
 
 I use squash merging so the completed feature enters `main` as one clean
-logical commit even when a future feature branch contains several intermediate
-development commits. Deleting the feature branch after the successful merge
-keeps the branch list focused on active work.
+logical commit even when a future feature branch contains several
+intermediate development commits. Deleting the feature branch after the
+successful merge keeps the branch list focused on active work.
 
-The merge itself triggers the CI workflow on `main`. I also verify that this
-post-merge run is green. This second run is not a substitute for the pull
-request check: the required order is **local quality gates -> pull request ->
-green PR CI -> squash merge -> green main CI**.
+The merge itself triggers the CI workflow on `main`. I also verify that
+this post-merge run is green. This second run is not a substitute for
+the pull request check: the required order is **local quality gates -\>
+pull request -\> green PR CI -\> squash merge -\> green main CI**.
 
 For Pull Request #1, `feat: add authentication token service`, the local
 quality gates passed, the pull-request `Quality gates` check completed
-successfully, and the post-merge CI run on `main` also completed successfully.
-The process rule above makes the ordering explicit for all subsequent work.
+successfully, and the post-merge CI run on `main` also completed
+successfully. The process rule above makes the ordering explicit for all
+subsequent work.
 
 ## JWT token service
 
-I implemented `services/accounts-service/src/auth/token-service.ts` with `jose` 6.2.12. I chose `jose` because it provides the JWT signing and verification primitives needed by the Node.js 24 ESM/TypeScript service without requiring a separate CommonJS compatibility layer. The dependency is owned by `@mailshrimp/accounts-service`, because token cryptography is currently an accounts-service responsibility rather than a generic repository-wide concern.
+I implemented `services/accounts-service/src/auth/token-service.ts` with
+`jose` 6.2.12. I chose `jose` because it provides the JWT signing and
+verification primitives needed by the Node.js 24 ESM/TypeScript service
+without requiring a separate CommonJS compatibility layer. The
+dependency is owned by `@mailshrimp/accounts-service`, because token
+cryptography is currently an accounts-service responsibility rather than
+a generic repository-wide concern.
 
-The token service receives already-validated signing secrets through dependency injection instead of reading `process.env` itself. I keep environment access and validation in the configuration layer and cryptographic/token semantics in the authentication layer. This also allows tests to use deterministic test-only credentials without loading a developer's `.env`.
+The token service receives already-validated signing secrets through
+dependency injection instead of reading `process.env` itself. I keep
+environment access and validation in the configuration layer and
+cryptographic/token semantics in the authentication layer. This also
+allows tests to use deterministic test-only credentials without loading
+a developer's `.env`.
 
 ### Current JWT policy
 
-I currently use `HS256` for the initial single-service signing boundary. Access and refresh tokens use separate HMAC secrets. Verification explicitly allowlists `HS256` rather than accepting an algorithm chosen freely by an incoming token.
+I currently use `HS256` for the initial single-service signing boundary.
+Access and refresh tokens use separate HMAC secrets. Verification
+explicitly allowlists `HS256` rather than accepting an algorithm chosen
+freely by an incoming token.
 
-Every issued token includes a `sub` subject identifying the account, a signed MailShrimp `tokenType` claim, an issued-at (`iat`) time, and an expiration (`exp`) time. Access tokens use the configured 15-minute lifetime and refresh tokens use the configured seven-day lifetime. The verifier requires a non-empty string subject and the expected token type after cryptographic verification.
+Every issued token includes a `sub` subject identifying the account, a
+signed MailShrimp `tokenType` claim, an issued-at (`iat`) time, and an
+expiration (`exp`) time. Access and refresh expiration are calculated
+from the validated lifetimes injected into the token service. The
+documented defaults remain 15 minutes and 7 days respectively, but
+deployments may use another value within the supported policy ranges.
+The verifier requires a non-empty string subject and the expected token
+type after cryptographic verification.
 
-The signed `tokenType` claim and separate signing credentials provide two independent controls against treating an access token as a refresh token or a refresh token as an access token. A JWT with a valid signature is not automatically a valid MailShrimp authentication token; the required application claims must also satisfy the expected semantics.
+The signed `tokenType` claim and separate signing credentials provide
+two independent controls against treating an access token as a refresh
+token or a refresh token as an access token. A JWT with a valid
+signature is not automatically a valid MailShrimp authentication token;
+the required application claims must also satisfy the expected
+semantics.
 
-I treat HS256 as the current architecture decision, not an irreversible one. If access-token verification later crosses independently deployed trust boundaries, I can move to asymmetric signing so verifier services receive only public verification material and do not gain the ability to issue tokens. That decision will be made when the service-to-service authentication boundary is implemented.
+I treat HS256 as the current architecture decision, not an irreversible
+one. If access-token verification later crosses independently deployed
+trust boundaries, I can move to asymmetric signing so verifier services
+receive only public verification material and do not gain the ability to
+issue tokens. That decision will be made when the service-to-service
+authentication boundary is implemented.
 
-Refresh-token rotation and revocation are not implemented by this JWT service alone. The refresh flow will require server-side session/token state and reuse protection; a token identifier such as `jti` can be introduced as part of that design when the persistence model is defined.
+Refresh-token rotation and revocation are not implemented by this JWT
+service alone. The refresh flow will require server-side session/token
+state and reuse protection; a token identifier such as `jti` can be
+introduced as part of that design when the persistence model is defined.
 
 ### JWT token-service tests
 
-`token-service.test.ts` contains 11 tests. It verifies access-token and refresh-token creation/verification, exact configured token lifetimes, rejection when one token class is presented as the other, rejection of a token signed by an untrusted key, rejection of a tampered payload, rejection of a validly signed token with the wrong application token type, rejection of a token without an account subject, and rejection of an expired access token.
+`token-service.test.ts` now contains 13 tests. It verifies access-token
+and refresh-token creation/verification, injected default-policy
+lifetimes, custom injected access and refresh lifetimes, rejection when
+one token class is presented as the other, rejection of a token signed
+by an untrusted key, rejection of a tampered payload, rejection of a
+validly signed token with the wrong application token type, rejection of
+a token without an account subject, and rejection of an expired access
+token.
 
-The tampering test intentionally replaces the JWT payload while retaining the original signature, proving that post-issuance payload modification is rejected. The expiration test creates an already-expired token with the trusted key so expiration validation is tested independently from signature failure.
+The custom-lifetime tests deliberately use values different from the
+documented defaults. This proves that the token service uses injected
+configuration rather than accidentally retaining fixed lifetime
+constants. The focused `token-service.test.ts` run passed all 13 tests.
 
-After the token-service implementation and test corrections, I reran the complete repository quality gates. Type checking, linting, all tests, and the production build passed. The accounts service passed 44 tests across seven suites and `@mailshrimp/http` passed three tests in one suite, for 47 tests across eight suites repository-wide. `npm audit` reported zero known vulnerabilities.
+The tampering test intentionally replaces the JWT payload while
+retaining the original signature, proving that post-issuance payload
+modification is rejected. The expiration test creates an already-expired
+token with the trusted key so expiration validation is tested
+independently from signature failure.
+
+The previous merged authentication-token feature passed the complete
+repository quality gates with 47 tests across eight suites and
+`npm audit` reporting zero known dependency vulnerabilities. The current
+configurable-lifetime work must pass the complete quality gates again
+before it can be committed, pushed, or merged.
 
 ## Infrastructure documentation
 
@@ -1461,39 +1567,53 @@ GitHub, CI/CD, or deployment.
 
 ## Current progress
 
-At this point I have completed and locally validated the initial accounts-service and authentication-token foundations:
+The authentication-token service and mandatory green-CI merge policy are
+already merged into `main`. Pull Request #1 introduced the JWT token
+service, and Pull Request #2 documented the rule that pull-request CI
+must be green before a squash merge. The post-merge CI run on `main` was
+green after both completed changes.
 
-- npm workspace integration;
-- strict TypeScript and NodeNext/ESM configuration;
-- ESLint with type-aware TypeScript rules;
-- Jest, ts-jest, and Supertest configuration;
-- separate application and executable server entry points;
-- `GET /health`;
-- validated environment-based HTTP port configuration with default port `3111`;
-- the private `@mailshrimp/http` workspace package and public `HttpStatus` API;
-- clean-checkout TypeScript and Jest resolution for the shared package;
-- prevention of Express `X-Powered-By` disclosure;
-- Pino 10.3.1 structured JSON logging and centralized sensitive-field redaction;
-- internally generated UUID request IDs and `X-Request-ID` response correlation;
-- completed-request logging with method, path, status, duration, and severity separation;
-- authentication token policy with 15-minute access tokens and seven-day refresh tokens;
-- separate validated access-token and refresh-token signing secrets;
-- ignored local `.env`, committed `.env.example`, and fail-fast authentication configuration;
-- `jose` 6.2.12 JWT signing and verification;
-- HS256 algorithm allowlisting with separate access/refresh signing keys;
-- signed `tokenType`, `sub`, `iat`, and `exp` token semantics;
-- 11 JWT token-service tests covering valid tokens, lifetimes, token-class separation, untrusted keys, tampering, invalid claims, and expiration;
-- seven passing `accounts-service` suites with 44 passing tests;
-- one passing `@mailshrimp/http` suite with three passing tests;
-- 47 passing tests across eight suites repository-wide;
-- successful repository-wide type checking and linting;
-- successful deterministic package-before-service production build;
-- `npm audit` reporting zero known dependency vulnerabilities;
-- clean Git history published to the new GitHub repository;
-- GitHub Actions CI with read-only repository permissions, Node.js 24, reproducible `npm ci`, and repository-wide typecheck, lint, test, and build gates;
-- successful CI validation on `main`; and
-- feature-branch development policy requiring local gates and pull-request CI before merge to `main`.
+The current feature branch is `feat/auth-session`. Before implementing
+the database-backed authentication-session and refresh-rotation layer, I
+am making token lifetimes deployment-configurable so later session
+behavior has one validated source of authentication timing policy.
 
-The current feature branch is `feat/auth-tokens`. Its local quality gates are passing. The next Git step is to review and stage the documented feature, commit it, push the feature branch, open a pull request to `main`, wait for CI to pass, and only then merge it.
+The current uncommitted feature work includes:
 
-The next application work will continue incrementally with tests and documentation updated alongside each meaningful behavior or architectural decision. Registration/login persistence, password hashing, refresh-token rotation/revocation, authenticated routes, the remaining backend services, frontend implementation, and full frontend/API integration remain future work. Continuous deployment and Lightsail deployment remain intentionally deferred until the application is ready.
+-   `ACCESS_TOKEN_TTL_SECONDS` and `REFRESH_TOKEN_TTL_SECONDS` in the
+    public `.env.example` contract;
+-   15-minute and 7-day defaults with explicit bounded policy ranges;
+-   strict base-10 integer parsing and fail-fast environment validation;
+-   startup validation of token lifetimes before the HTTP listener
+    opens;
+-   dependency-injected access and refresh lifetimes in the JWT token
+    service;
+-   dynamic refresh-cookie `maxAge` calculation from the effective
+    refresh TTL;
+-   focused tests for environment parsing, token policy, cookie
+    synchronization, and custom JWT lifetimes; and
+-   English source/test comments documenting the security and
+    architectural rationale.
+
+The focused tests completed so far are green: `token-service.test.ts`
+passed 13 tests, `environment.test.ts` passed 42 tests, and
+`token-config.test.ts` passed 7 tests. Repository-wide TypeScript
+checking also passed after the runtime wiring changes. These focused
+results do not replace the mandatory final local quality gates.
+
+Before this branch can be committed or pushed, I still run the complete
+local sequence: `npm run typecheck`, `npm run lint`, `npm test`,
+`npm run build`, and `npm audit`, followed by Git status/diff and
+secret-hygiene review. After the branch is pushed, the pull request must
+reach zero failing and zero pending required checks before squash merge,
+and the post-merge `main` CI run must also be green.
+
+Registration/login persistence, password hashing, database-backed
+refresh-token rotation/revocation and reuse detection, authenticated
+routes, the remaining backend services, frontend implementation, and
+full frontend/API integration remain future application work. The
+original Sequelize-based MailShrimp persistence design remains relevant
+reference material for the upcoming database layer; JWT cryptography
+itself remains intentionally independent from the ORM. Continuous
+deployment and Lightsail deployment remain intentionally deferred until
+the application is ready.

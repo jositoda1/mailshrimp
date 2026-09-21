@@ -1,3 +1,14 @@
+// services/accounts-service/src/config/environment.ts
+
+import {
+  DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+  DEFAULT_REFRESH_TOKEN_TTL_SECONDS,
+  MAX_ACCESS_TOKEN_TTL_SECONDS,
+  MAX_REFRESH_TOKEN_TTL_SECONDS,
+  MIN_ACCESS_TOKEN_TTL_SECONDS,
+  MIN_REFRESH_TOKEN_TTL_SECONDS,
+} from "../auth/token-config.js";
+
 /**
  * Default TCP port used by the accounts service.
  *
@@ -27,6 +38,17 @@ export const MIN_AUTH_SECRET_LENGTH = 32;
 export interface AuthenticationSecrets {
   accessTokenSecret: string;
   refreshTokenSecret: string;
+}
+
+/**
+ * Validated token lifetimes used by the authentication layer.
+ *
+ * I expose seconds explicitly in the property names so callers cannot confuse
+ * JWT lifetime values with millisecond-based values such as cookie maxAge.
+ */
+export interface AuthenticationTokenLifetimes {
+  accessTokenTtlSeconds: number;
+  refreshTokenTtlSeconds: number;
 }
 
 /**
@@ -125,5 +147,85 @@ export function getAuthenticationSecrets(
   return {
     accessTokenSecret: validatedAccessTokenSecret,
     refreshTokenSecret: validatedRefreshTokenSecret,
+  };
+}
+
+/**
+ * Validates one configurable authentication-token lifetime.
+ *
+ * I accept only a base-10 integer written entirely as decimal digits. Using
+ * Number() alone would also accept formats such as scientific notation or
+ * whitespace-only variations, which makes deployment configuration less
+ * predictable than necessary.
+ *
+ * The minimum and maximum are policy safeguards defined by token-config.ts.
+ * Invalid configured values fail startup instead of silently falling back to a
+ * default, because silently ignoring a typo could create an authentication
+ * policy different from the one the operator intended.
+ */
+function validateTokenLifetime(
+  variableName: string,
+  configuredValue: string,
+  minimumSeconds: number,
+  maximumSeconds: number,
+): number {
+  if (!/^\d+$/.test(configuredValue)) {
+    throw new Error(
+      `Invalid ${variableName} environment variable. Expected an integer between ${minimumSeconds} and ${maximumSeconds} seconds.`,
+    );
+  }
+
+  const lifetimeSeconds = Number(configuredValue);
+
+  if (
+    !Number.isSafeInteger(lifetimeSeconds) ||
+    lifetimeSeconds < minimumSeconds ||
+    lifetimeSeconds > maximumSeconds
+  ) {
+    throw new Error(
+      `Invalid ${variableName} environment variable. Expected an integer between ${minimumSeconds} and ${maximumSeconds} seconds.`,
+    );
+  }
+
+  return lifetimeSeconds;
+}
+
+/**
+ * Resolves and validates authentication-token lifetimes.
+ *
+ * I keep the defaults in token-config.ts so the authentication policy has one
+ * source of truth. Environment variables can override those defaults without
+ * requiring the application to be rebuilt.
+ *
+ * Parameters remain injectable so tests can validate configuration behavior
+ * without changing process.env and leaking state between test cases.
+ */
+export function getAuthenticationTokenLifetimes(
+  accessTokenTtl = process.env.ACCESS_TOKEN_TTL_SECONDS,
+  refreshTokenTtl = process.env.REFRESH_TOKEN_TTL_SECONDS,
+): AuthenticationTokenLifetimes {
+  const accessTokenTtlSeconds =
+    accessTokenTtl === undefined
+      ? DEFAULT_ACCESS_TOKEN_TTL_SECONDS
+      : validateTokenLifetime(
+          "ACCESS_TOKEN_TTL_SECONDS",
+          accessTokenTtl,
+          MIN_ACCESS_TOKEN_TTL_SECONDS,
+          MAX_ACCESS_TOKEN_TTL_SECONDS,
+        );
+
+  const refreshTokenTtlSeconds =
+    refreshTokenTtl === undefined
+      ? DEFAULT_REFRESH_TOKEN_TTL_SECONDS
+      : validateTokenLifetime(
+          "REFRESH_TOKEN_TTL_SECONDS",
+          refreshTokenTtl,
+          MIN_REFRESH_TOKEN_TTL_SECONDS,
+          MAX_REFRESH_TOKEN_TTL_SECONDS,
+        );
+
+  return {
+    accessTokenTtlSeconds,
+    refreshTokenTtlSeconds,
   };
 }
