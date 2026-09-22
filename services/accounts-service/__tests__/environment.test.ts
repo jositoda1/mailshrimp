@@ -9,9 +9,11 @@ import {
   MIN_REFRESH_TOKEN_TTL_SECONDS,
 } from "../src/auth/token-config.js";
 import {
+  DEFAULT_DB_PORT,
   DEFAULT_PORT,
   getAuthenticationSecrets,
   getAuthenticationTokenLifetimes,
+  getDatabaseConfig,
   getPort,
   MIN_AUTH_SECRET_LENGTH,
 } from "../src/config/environment.js";
@@ -38,18 +40,14 @@ describe("HTTP port configuration", () => {
    * I test several invalid representations because accepting any of these
    * values could leave the service incorrectly configured or unreachable.
    */
-  it.each([
-    "",
-    "abc",
-    "0",
-    "-1",
-    "65536",
-    "3111.5",
-  ])("rejects invalid PORT value %j", (configuredPort) => {
-    expect(() => getPort(configuredPort)).toThrow(
-      `Invalid PORT environment variable: "${configuredPort}". Expected an integer between 1 and 65535.`,
-    );
-  });
+  it.each(["", "abc", "0", "-1", "65536", "3111.5"])(
+    "rejects invalid PORT value %j",
+    (configuredPort) => {
+      expect(() => getPort(configuredPort)).toThrow(
+        `Invalid PORT environment variable: "${configuredPort}". Expected an integer between 1 and 65535.`,
+      );
+    },
+  );
 
   /**
    * Ports 1 and 65535 are valid boundary values, so I explicitly protect
@@ -61,6 +59,195 @@ describe("HTTP port configuration", () => {
 
   it("accepts the highest valid TCP port", () => {
     expect(getPort("65535")).toBe(65535);
+  });
+});
+
+describe("database configuration", () => {
+  const host = "127.0.0.1";
+  const database = "mailshrimp";
+  const user = "mailshrimp";
+  const password = "local-database-password";
+
+  /**
+   * A complete database configuration should be returned in the shape expected
+   * by the persistence infrastructure without requiring mysql2 to read the
+   * process environment directly.
+   */
+  it("returns valid database configuration", () => {
+    expect(getDatabaseConfig(host, "3307", database, user, password)).toEqual({
+      host,
+      port: 3307,
+      database,
+      user,
+      password,
+    });
+  });
+
+  /**
+   * MySQL normally listens on port 3306. I keep that as the only database
+   * configuration default so deployments using the standard port do not need
+   * to repeat it unnecessarily.
+   */
+  it("uses the standard MySQL port when DB_PORT is not configured", () => {
+    expect(
+      getDatabaseConfig(host, undefined, database, user, password),
+    ).toEqual({
+      host,
+      port: DEFAULT_DB_PORT,
+      database,
+      user,
+      password,
+    });
+
+    expect(DEFAULT_DB_PORT).toBe(3306);
+  });
+
+  /**
+   * Database host, database name, database user, and password are required.
+   *
+   * I deliberately avoid fallback values such as root, an empty password, or
+   * an implicit database name because those defaults could make a deployment
+   * connect to an unintended database or use an unnecessarily privileged
+   * account.
+   */
+  it.each([
+    {
+      variableName: "DB_HOST",
+      values: [undefined, ""] as const,
+      createConfig: (value: string | undefined) =>
+        getDatabaseConfig(value, "3306", database, user, password),
+    },
+    {
+      variableName: "DB_NAME",
+      values: [undefined, ""] as const,
+      createConfig: (value: string | undefined) =>
+        getDatabaseConfig(host, "3306", value, user, password),
+    },
+    {
+      variableName: "DB_USER",
+      values: [undefined, ""] as const,
+      createConfig: (value: string | undefined) =>
+        getDatabaseConfig(host, "3306", database, value, password),
+    },
+    {
+      variableName: "DB_PASSWORD",
+      values: [undefined, ""] as const,
+      createConfig: (value: string | undefined) =>
+        getDatabaseConfig(host, "3306", database, user, value),
+    },
+  ])(
+    "rejects a missing or empty $variableName value",
+    ({ variableName, values, createConfig }) => {
+      for (const value of values) {
+        expect(() => createConfig(value)).toThrow(
+          `Invalid ${variableName} environment variable. Expected a non-empty value.`,
+        );
+      }
+    },
+  );
+
+  /**
+   * Whitespace-only database values are equivalent to missing configuration
+   * and must not allow the service to start.
+   */
+  it.each([
+    {
+      variableName: "DB_HOST",
+      createConfig: () =>
+        getDatabaseConfig("   ", "3306", database, user, password),
+    },
+    {
+      variableName: "DB_NAME",
+      createConfig: () =>
+        getDatabaseConfig(host, "3306", "   ", user, password),
+    },
+    {
+      variableName: "DB_USER",
+      createConfig: () =>
+        getDatabaseConfig(host, "3306", database, "   ", password),
+    },
+    {
+      variableName: "DB_PASSWORD",
+      createConfig: () =>
+        getDatabaseConfig(host, "3306", database, user, "   "),
+    },
+  ])(
+    "rejects a whitespace-only $variableName value",
+    ({ variableName, createConfig }) => {
+      expect(createConfig).toThrow(
+        `Invalid ${variableName} environment variable. Expected a non-empty value.`,
+      );
+    },
+  );
+
+  /**
+   * DB_PORT uses the same valid TCP range as the HTTP server, but I require a
+   * strict decimal representation rather than relying on JavaScript coercion.
+   */
+  it.each([
+    "",
+    "abc",
+    "0",
+    "-1",
+    "+3306",
+    "3306.5",
+    "1e3",
+    " 3306",
+    "3306 ",
+    "65536",
+  ])("rejects invalid DB_PORT value %j", (configuredPort) => {
+    expect(() =>
+      getDatabaseConfig(host, configuredPort, database, user, password),
+    ).toThrow(
+      "Invalid DB_PORT environment variable. Expected an integer between 1 and 65535.",
+    );
+  });
+
+  /**
+   * I explicitly protect both valid TCP boundaries so later changes to port
+   * validation cannot accidentally reject legitimate values.
+   */
+  it("accepts the lowest valid database TCP port", () => {
+    expect(getDatabaseConfig(host, "1", database, user, password).port).toBe(1);
+  });
+
+  it("accepts the highest valid database TCP port", () => {
+    expect(
+      getDatabaseConfig(host, "65535", database, user, password).port,
+    ).toBe(65535);
+  });
+
+  /**
+   * Validation uses trim only to decide whether a required value is empty.
+   *
+   * The original configured value must be preserved because passwords and
+   * other credentials may legitimately contain leading or trailing whitespace.
+   */
+  it("preserves the exact database password value", () => {
+    const passwordWithWhitespace = " database-password ";
+
+    expect(
+      getDatabaseConfig(host, "3306", database, user, passwordWithWhitespace)
+        .password,
+    ).toBe(passwordWithWhitespace);
+  });
+
+  /**
+   * Database credentials must never be echoed by configuration failures
+   * because startup errors may be captured by application, CI, deployment, or
+   * process-manager logs.
+   */
+  it("does not expose the database password in an error message", () => {
+    const sensitivePassword = "do-not-log-this-database-password";
+
+    try {
+      getDatabaseConfig("", "3306", database, user, sensitivePassword);
+
+      throw new Error("Expected database configuration validation to fail.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(sensitivePassword);
+    }
   });
 });
 
@@ -109,9 +296,9 @@ describe("authentication secret configuration", () => {
       getAuthenticationSecrets(tooShort, refreshTokenSecret),
     ).toThrow("Invalid ACCESS_TOKEN_SECRET environment variable.");
 
-    expect(() =>
-      getAuthenticationSecrets(accessTokenSecret, tooShort),
-    ).toThrow("Invalid REFRESH_TOKEN_SECRET environment variable.");
+    expect(() => getAuthenticationSecrets(accessTokenSecret, tooShort)).toThrow(
+      "Invalid REFRESH_TOKEN_SECRET environment variable.",
+    );
   });
 
   it("accepts authentication secrets exactly at the minimum length", () => {
@@ -313,8 +500,8 @@ describe("authentication token lifetime configuration", () => {
    * other. Any invalid configured authentication policy must fail as a whole.
    */
   it("rejects an invalid refresh lifetime when the access lifetime is valid", () => {
-    expect(() =>
-      getAuthenticationTokenLifetimes("300", "invalid"),
-    ).toThrow("Invalid REFRESH_TOKEN_TTL_SECONDS environment variable.");
+    expect(() => getAuthenticationTokenLifetimes("300", "invalid")).toThrow(
+      "Invalid REFRESH_TOKEN_TTL_SECONDS environment variable.",
+    );
   });
 });

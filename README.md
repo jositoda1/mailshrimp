@@ -18,10 +18,8 @@ foundation, health endpoint, executable server entry point, validated
 environment configuration, structured logging, HTTP request correlation,
 shared HTTP status package integration, authentication configuration,
 JWT token service, configurable token lifetimes, refresh-session persistence
-
-contracts, tests, linting, type checking, and production build are implemented
-
-and passing locally.
+contracts, production MySQL auth-session repository foundation, tests, linting,
+type checking, and production build are implemented and passing locally.
 
 The clean repository is published to the new GitHub repository. I do not
 reuse the compromised repository or its history. New application work is
@@ -293,6 +291,8 @@ The currently configured backend toolchain includes:
 
 -   jose 6.2.12 for JWT signing and verification.
 
+-   mysql2 3.24.4 for direct MySQL persistence and pooled connections.
+
 The frontend is planned around React, Vite, TypeScript, functional
 
 components, and hooks.
@@ -356,31 +356,30 @@ services/accounts-service/
 │   ├── helpers/
 │   │   └── test-logger.ts
 │   ├── auth-session-repository.test.ts
-
 │   ├── environment.test.ts
-
 │   ├── health.test.ts
 │   ├── http-logger.test.ts
 │   ├── logger.test.ts
+│   ├── mysql-auth-session-repository.test.ts
+│   ├── mysql-pool.test.ts
 │   ├── request-context.test.ts
 │   ├── token-config.test.ts
 │   └── token-service.test.ts
 ├── src/
 │   ├── auth/
-
 │   │   ├── session/
-
 │   │   │   ├── auth-session-repository.ts
-
 │   │   │   ├── auth-session.ts
-
-│   │   │   └── in-memory-auth-session-repository.ts
-
+│   │   │   ├── in-memory-auth-session-repository.ts
+│   │   │   └── mysql-auth-session-repository.ts
 │   │   ├── token-config.ts
-
 │   │   └── token-service.ts
 │   ├── config/
 │   │   └── environment.ts
+│   ├── database/
+│   │   ├── migrations/
+│   │   │   └── 001-create-auth-sessions.sql
+│   │   └── mysql-pool.ts
 │   ├── logging/
 │   │   └── logger.ts
 │   ├── middleware/
@@ -518,6 +517,98 @@ The tests cover:
 -   ports above `65535`;
 
 -   non-integer numeric values.
+
+## MySQL persistence foundation
+
+The accounts/authentication data remains relational. I keep
+`AuthSessionRepository` independent from a specific ORM or database client, and
+I implemented the production repository with `mysql2` rather than making
+Sequelize part of the authentication contract.
+
+During this feature I evaluated Sequelize 6 with MySQL. The installed Sequelize
+6 dependency tree caused `npm audit` to report a known `uuid` advisory. The
+available forced fix proposed a breaking downgrade, while the Sequelize 7
+package observed during the evaluation was still an alpha release. I therefore
+removed Sequelize rather than accepting a risky forced downgrade, unsupported
+override, or alpha ORM solely to complete this persistence layer. The final
+dependency tree uses `mysql2` 3.24.4 directly and the current `npm audit` result
+is zero known vulnerabilities.
+
+### Database environment configuration
+
+The public environment contract now includes:
+
+``` dotenv
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=mailshrimp
+DB_USER=mailshrimp
+DB_PASSWORD=replace-with-a-real-database-password
+```
+
+`DB_HOST`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` are required. `DB_PORT`
+defaults to the standard MySQL port `3306` when omitted and otherwise must be a
+base-10 integer from `1` through `65535`. Required text values reject missing or
+whitespace-only input. Validation errors identify the environment variable but
+do not echo its configured value, which prevents `DB_PASSWORD` from being
+copied into startup or deployment logs.
+
+Real database credentials belong only in the ignored
+`services/accounts-service/.env` file during local development or in an
+appropriate deployment secret store. `.env.example` contains only safe
+placeholders and documentation. Production should use a dedicated MySQL user
+with only the permissions required by `accounts-service`, not an administrative
+account.
+
+`getDatabaseConfig()` owns environment parsing and validation. The MySQL pool
+factory receives the already-validated configuration and does not read
+`process.env` directly. `server.ts` currently calls the validator before opening
+the HTTP listener so malformed database configuration fails fast. This is a
+configuration readiness check only: the running service does not yet create the
+shared pool or prove live MySQL connectivity during startup.
+
+### Connection pool policy
+
+`src/database/mysql-pool.ts` creates a bounded `mysql2` promise pool. I use a
+pool because opening a new TCP/database connection for every repository
+operation would add unnecessary latency and resource pressure. The current pool
+allows waiting for an available connection, limits active connections to `10`,
+and limits the waiting queue to `100`. The bounded queue prevents database
+saturation from becoming unbounded application-memory growth; it is not a
+connection-wait timeout.
+
+Repository SQL uses positional `?` parameter binding. I do not interpolate
+session identifiers, hashes, account identifiers, timestamps, or other values
+into SQL text. Named placeholders remain disabled so one binding style is used
+consistently.
+
+The connection timezone is explicitly `Z` (UTC), and `dateStrings` remains
+`false` so mysql2 converts MySQL date/time fields to JavaScript `Date` objects.
+The `auth_sessions` schema uses `DATETIME(3)`, which has no timezone metadata,
+so the explicit UTC connection convention prevents timestamp interpretation
+from silently depending on a developer machine, CI runner, or production host
+timezone.
+
+### Auth-session schema migration
+
+`src/database/migrations/001-create-auth-sessions.sql` defines the current
+`auth_sessions` schema using InnoDB. Each row contains a stable session `id`,
+the owning integer `account_id`, unique refresh-token `token_id`, one-way
+`token_hash`, absolute expiry, revocation/replacement state, and application
+creation/update timestamps. Access tokens and raw refresh tokens are not stored.
+
+The schema includes a unique index on `token_id`, an `(account_id, revoked_at)`
+index for account-scoped active-session revocation, and an `expires_at` index
+for future retention/cleanup work. `DATETIME(3)` preserves the millisecond
+precision used by JavaScript dates.
+
+I intentionally do not add the `account_id` foreign key yet because the rebuilt
+`accounts` table is not yet managed by this migration history. The migration is
+therefore an independently creatable auth-session table, and referential
+integrity will be introduced only after the accounts schema is versioned in the
+same controlled migration set. I also have not implemented the migration runner
+yet. This SQL file has not been executed as a production-deployment step, and I
+will not treat manual SQL execution as the long-term migration process.
 
 ## Logging and observability
 
@@ -730,17 +821,13 @@ descriptive
 
 `*.test.ts` filenames.
 
-The current `accounts-service` suite contains eight test suites and 87
-
-passing tests. The `@mailshrimp/http` package adds one suite with three
-
-tests, for nine suites and 90 passing tests repository-wide. The
-
-refresh-session repository suite contributes 13 tests that define the
-
-expected persistence and atomic-rotation behavior before the production
-
-SQL repository is introduced.
+The current `accounts-service` suite contains ten test suites and 126
+passing tests. The `@mailshrimp/http` package adds one suite with three tests,
+for eleven suites and 129 passing tests repository-wide. The in-memory
+refresh-session repository suite contributes 13 behavioral tests, and the
+production MySQL repository/pool tests add focused coverage for SQL binding,
+transactions, locking requests, row mapping, revocation, pool bounds, UTC date
+handling, and credential preservation.
 
 `health.test.ts` uses Supertest against `createApp()` and verifies the
 
@@ -750,11 +837,10 @@ network port. It also verifies that Express's `X-Powered-By` header is
 
 not exposed.
 
-`environment.test.ts` verifies the HTTP port configuration independently
-
-from server startup, including valid values, invalid values, defaults,
-
-and TCP boundary values.
+`environment.test.ts` verifies HTTP-port and database configuration
+independently from server startup, including defaults, valid values, required
+MySQL fields, strict database-port parsing, TCP boundary values, and failures
+that do not disclose configured database credentials.
 
 `logger.test.ts` verifies structured Pino output, service metadata,
 
@@ -775,6 +861,17 @@ levels for 4xx and 5xx responses, correlation with the response request
 ID, duration logging, and the absence of sensitive authentication
 
 headers from HTTP logs.
+
+`mysql-auth-session-repository.test.ts` contains 11 tests for parameterized
+inserts/lookups, database-row mapping, `SELECT ... FOR UPDATE`, all current
+rotation outcomes, commit/rollback behavior, cross-account replacement
+rejection, connection release, and scoped revocation queries.
+
+`mysql-pool.test.ts` contains 4 tests for validated pool input, bounded
+connection/queue settings, explicit UTC/date conversion behavior, and exact
+password preservation. These repository and pool tests use mocks: they verify
+which mysql2 operations the code requests, but they cannot prove real InnoDB
+locking behavior. A real MySQL integration/concurrency suite remains required.
 
 ### Jest and ESM
 
@@ -854,15 +951,12 @@ application to maintain its own implementation while still participating
 
 in repository-wide checks.
 
-The repository-wide type check, lint, tests, and production build all
+The repository-wide type check, lint, tests, and production build all pass
+locally. The latest complete run contains eleven passing suites and 129 passing
+tests: 126 in `accounts-service` and 3 in `@mailshrimp/http`.
 
-pass locally. The latest complete run contains nine passing suites and
-
-90 passing tests: 87 in `accounts-service` and 3 in `@mailshrimp/http`.
-
-`npm audit` also reports zero known vulnerabilities in the currently
-
-installed dependency tree.
+`npm audit` also reports zero known vulnerabilities in the currently installed
+dependency tree.
 
 The current production build contains:
 
@@ -904,11 +998,17 @@ services/accounts-service/dist/auth/session/in-memory-auth-session-repository.js
 
 services/accounts-service/dist/auth/session/in-memory-auth-session-repository.js.map
 
+services/accounts-service/dist/auth/session/mysql-auth-session-repository.js
 
+services/accounts-service/dist/auth/session/mysql-auth-session-repository.js.map
 
 services/accounts-service/dist/config/environment.js
 
 services/accounts-service/dist/config/environment.js.map
+
+services/accounts-service/dist/database/mysql-pool.js
+
+services/accounts-service/dist/database/mysql-pool.js.map
 
 services/accounts-service/dist/logging/logger.js
 
@@ -1098,14 +1198,11 @@ local artifacts.
 ## Authentication
 
 Authentication is being implemented incrementally. The configuration, JWT
-
-token service, configurable token lifetimes, and refresh-session persistence
-
-contract foundations are implemented. Registration, login, password hashing,
-
-refresh HTTP endpoints, the production database repository, logout, and
-
-authenticated business routes are still planned.
+token service, configurable token lifetimes, refresh-session persistence
+contract, and production MySQL auth-session repository foundation are
+implemented. The repository is not yet wired into the running service.
+Registration, email/password login, password hashing, refresh HTTP endpoints,
+logout, and authenticated business routes are still planned.
 
 The intended end-to-end model uses short-lived access tokens,
 longer-lived rotating refresh tokens, Secure and HttpOnly refresh-token
@@ -1114,11 +1211,15 @@ handling, automatic refresh after an eligible `401`, retry of the
 original request after successful refresh, single-flight refresh
 behavior, and server-side refresh-token revocation/reuse protection.
 
-Password hashing is separate from JWT handling. `jose` signs and
-verifies authentication tokens; it does not hash passwords. I will
-select and document the password-hashing implementation when
-registration/login persistence is implemented, rather than carrying a
-dependency forward only because the previous project used it.
+Password hashing is separate from JWT handling. `jose` signs and verifies
+authentication tokens; it does not hash passwords. Login will use email and
+password as credentials, look the account up by email, verify the persisted
+password hash, and then use the trusted internal account ID as the JWT subject.
+Unknown-email and incorrect-password failures will use the same generic
+`Invalid email or password` response so the endpoint does not become a simple
+account-enumeration oracle. I will select and document the password-hashing
+implementation when registration/login persistence is implemented rather than
+carrying a dependency forward only because the previous project used it.
 
 Cookie domain, path, expiry, Secure, and SameSite settings will be
 finalized from the actual frontend/API deployment domains rather than
@@ -1134,7 +1235,7 @@ behavior with automated tests.
 
 I am implementing refresh-token security as server-side session state rather than relying on signed refresh JWTs alone. A valid JWT signature proves that MailShrimp issued a token, but it does not by itself provide immediate logout, rotation, revocation, or reliable reuse detection after a token is stolen.
 
-The current foundation lives under `services/accounts-service/src/auth/session/`. `AuthSession` models persisted refresh-session state independently from JWT and Sequelize implementation details. The account identifier remains a number because the original MailShrimp relational account model uses an integer primary key. The session has its own stable `id`, while `tokenId` is intended to correspond to the refresh JWT `jti`. I keep these identities separate: `sub` identifies the authenticated account, while `jti`/`tokenId` identifies one particular refresh credential/session. The current JWT token service does not issue `jti` yet; that wiring remains part of the refresh-flow work.
+The current foundation lives under `services/accounts-service/src/auth/session/`. `AuthSession` models persisted refresh-session state independently from JWT, ORM, and database-client implementation details. The account identifier remains a number because the original MailShrimp relational account model uses an integer primary key. The session has its own stable `id`, while `tokenId` is intended to correspond to the refresh JWT `jti`. I keep these identities separate: `sub` identifies the authenticated account, while `jti`/`tokenId` identifies one particular refresh credential/session. The current JWT token service does not issue `jti` yet; that wiring remains part of the refresh-flow work.
 
 I never persist access tokens in the authentication-session store. Normal API requests are intended to validate short-lived access tokens cryptographically, without an authentication-session database lookup on every request. Database session state is reserved for refresh, logout, revocation, reuse handling, and other security-sensitive session operations.
 
@@ -1144,13 +1245,15 @@ Revoked sessions are retained instead of immediately deleted. `revokedAt` record
 
 ### Repository boundary and atomic rotation
 
-`AuthSessionRepository` is an application/domain-facing persistence contract. I keep it independent from Sequelize so authentication behavior can be tested without MySQL and so ORM details do not become authentication rules. The production implementation is still planned for the relational accounts/auth data store. The original Sequelize/MySQL design remains relevant, but the concrete production schema and repository implementation are not yet complete.
+`AuthSessionRepository` is an application/domain-facing persistence contract. I keep it independent from mysql2 so authentication behavior can be tested without MySQL and database-client details do not become authentication rules. `InMemoryAuthSessionRepository` remains the deterministic behavioral implementation for contract tests, while `MySqlAuthSessionRepository` is the production relational implementation.
 
-Refresh rotation is a single repository operation rather than a caller-managed `find` followed by `revoke` and `create`. Exactly one concurrent use of an active refresh session may rotate it. The future relational implementation must enforce that property at the database level with a transaction, locking, or an equivalent atomic conditional operation. Application timing checks are not sufficient.
+Refresh rotation is a single repository operation rather than a caller-managed `find` followed by `revoke` and `create`. The MySQL implementation acquires one pooled connection, starts a transaction, reads the current row with `SELECT ... FOR UPDATE`, validates its state/account ownership, revokes the current session, inserts the replacement through the same connection, and commits. Using the same connection is essential because a `pool.execute()` during the transaction could run on another pooled connection and escape the transaction boundary.
 
-The in-memory repository serializes mutations only to model this contract in tests. Its queue is not the production concurrency mechanism and must not be copied as a substitute for database atomicity. The repository also returns defensive copies so callers cannot mutate stored state indirectly, including mutable `Date` objects.
+If the current token is unknown, already revoked, or expired, the transaction is rolled back and no replacement is written. Expiration is inclusive: once the rotation time reaches `expiresAt`, the session cannot rotate. A replacement belonging to another account is rejected as an invariant violation. Any unexpected SQL/invariant failure rolls back so a failed replacement insert cannot leave the original session partially consumed. The connection is released in `finally` on success, early returns, and failures.
 
-The current rotation result distinguishes `rotated`, `not_found`, `already_revoked`, and `expired`. An already-revoked session is deliberately a security-relevant result because later authentication-service logic can treat it as possible refresh-token replay/reuse rather than as an ordinary missing record. Rotation also rejects a replacement associated with another account, which protects the account/session invariant inside the persistence boundary.
+The in-memory repository serializes mutations only to model the contract in tests. Its queue is not the production concurrency mechanism and must not be copied as a substitute for database atomicity. The repository also returns defensive copies so callers cannot mutate stored state indirectly, including mutable `Date` objects. The mocked MySQL tests confirm the requested transaction and locking operations, but only real MySQL integration tests can prove InnoDB row-lock behavior across concurrent connections.
+
+The current rotation result distinguishes `rotated`, `not_found`, `already_revoked`, and `expired`. An already-revoked session is deliberately a security-relevant result because later authentication-service logic can treat it as possible refresh-token replay/reuse rather than as an ordinary missing record. Single-session and account-wide revocation update only rows whose `revoked_at` is still null, preserving the first revocation timestamp and making repeated revocation idempotent at the persistence level.
 
 ### Account ownership and authorization
 
@@ -1162,11 +1265,13 @@ Client-supplied resource IDs may identify the requested resource but must never 
 
 `auth-session-repository.test.ts` contains 13 tests. They verify creation/retrieval, unknown-token behavior, defensive copying, duplicate token identifier rejection, successful rotation, already-consumed-token detection, expired and unknown rotation outcomes, cross-account rotation rejection, concurrent rotation, specific-session revocation, idempotent revocation, and account-scoped bulk revocation.
 
-The concurrency test starts two rotations of the same active session without waiting for either to finish. Exactly one must return `rotated`, the other must observe `already_revoked`, and only the winning replacement may be persisted. This is a behavioral specification for the future SQL implementation, not proof that an in-memory JavaScript queue provides production database safety.
+The concurrency test starts two rotations of the same active session without waiting for either to finish. Exactly one must return `rotated`, the other must observe `already_revoked`, and only the winning replacement may be persisted. This remains the behavioral contract that the production relational implementation must preserve.
+
+`mysql-auth-session-repository.test.ts` adds 11 production-repository unit tests covering parameter binding, row mapping, locking SQL, all current rotation outcomes, transaction commit/rollback, cross-account replacement protection, connection release, and revocation queries. `mysql-pool.test.ts` adds 4 tests for validated pool input, bounded resource settings, UTC conversion, and exact password preservation. These tests intentionally use mocks and therefore do not replace future integration tests against a real MySQL/InnoDB instance.
 
 ### Remaining authentication security work
 
-The session repository is a foundation, not a complete authentication flow. I still need to implement the production relational repository, refresh JWT `jti` issuance/verification, refresh-token hashing/lookup semantics, atomic service-level rotation, cookie transport, CSRF protection, logout, reuse containment, and authenticated access middleware. A refresh token must never be accepted as an access token.
+The session repository is a foundation, not a complete authentication flow. The production relational repository now exists, but I still need to wire the shared MySQL pool/repository into the running service, introduce controlled migration execution, add real MySQL integration/concurrency tests, implement refresh JWT `jti` issuance/verification, finalize refresh-token hashing/lookup semantics, implement service-level rotation, cookie transport, CSRF protection, logout, reuse containment, and authenticated access middleware. A refresh token must never be accepted as an access token.
 
 For browser refresh tokens I intend to use `HttpOnly` and `Secure`; final `SameSite`, `Path`, domain, and CSRF behavior will be derived from the actual frontend/API deployment topology. `HttpOnly` limits JavaScript access to the cookie but does not itself prevent CSRF.
 
@@ -1622,19 +1727,13 @@ modification is rejected. The expiration test creates an already-expired
 token with the trusted key so expiration validation is tested
 independently from signature failure.
 
-The authentication-token feature and configurable-lifetime feature have
-
-both been merged after their required quality gates. The current
-
-refresh-session persistence feature has also completed its local gates:
-
-90 tests across nine suites pass, type checking, linting, and production
-
-build pass, and `npm audit` reports zero known dependency vulnerabilities.
-
-The feature still requires commit/push, a pull request, and green PR CI
-
-before it can be merged.
+The authentication-token, configurable-lifetime, and refresh-session
+persistence-foundation features have been merged after their required quality
+gates. The current MySQL auth-session persistence feature has completed its
+local gates: 129 tests across eleven suites pass, type checking, linting, and
+production build pass, and `npm audit` reports zero known dependency
+vulnerabilities. The feature still requires final review, commit/push, a pull
+request, and green PR CI before it can be merged.
 
 ## Infrastructure documentation
 
@@ -1690,14 +1789,20 @@ GitHub, CI/CD, or deployment.
 
 ## Current progress
 
-The authentication-token service, mandatory green-CI merge policy, and configurable token-lifetime feature are already merged into `main`. Pull Request #1 introduced the JWT token service, Pull Request #2 documented the mandatory green-PR-CI policy, and Pull Request #3 made authentication token lifetimes deployment-configurable. Their required CI checks and post-merge `main` validation completed successfully.
+The authentication-token service, mandatory green-CI merge policy, configurable token-lifetime feature, and refresh-session persistence foundation are already merged into `main`. Pull Request #1 introduced the JWT token service, Pull Request #2 documented the mandatory green-PR-CI policy, Pull Request #3 made authentication token lifetimes deployment-configurable, and Pull Request #4 introduced the ORM-independent refresh-session domain contract, in-memory implementation, and concurrency/security behavior tests. Their required CI checks and post-merge `main` validation completed successfully.
 
-The current feature branch is `feat/auth-session-persistence`. I am building the server-side refresh-session persistence boundary before wiring refresh HTTP endpoints or committing to a concrete SQL schema. The current work adds `AuthSession`, the ORM-independent `AuthSessionRepository` contract, an in-memory behavioral implementation, and 13 repository tests.
+The current feature branch is `feat/auth-session-sequelize`. The branch name reflects the implementation direction considered when it was created, but the final feature does not use Sequelize. I removed Sequelize after the evaluated Sequelize 6 dependency tree introduced a known `uuid` advisory and the available force-fix/downgrade or unsupported override options were not acceptable. I kept the repository contract independent from ORM/database-client details and implemented the relational repository directly with `mysql2` 3.24.4.
 
-The implemented foundation covers session creation/lookup, defensive state copying, unique token identifiers, absolute expiration checks, explicit revoked state, replacement linkage, atomic rotation semantics, detection of a previously consumed session, cross-account rotation protection, idempotent single-session revocation, and account-scoped bulk revocation. The concurrency test requires exactly one of two simultaneous rotations of the same session to succeed.
+The current feature adds validated MySQL environment configuration, a bounded UTC-aware pool factory, `MySqlAuthSessionRepository`, the `auth_sessions` schema migration draft, and focused unit tests. Rotation uses a transaction and `SELECT ... FOR UPDATE`; the replacement is inserted through the same transaction connection, failures roll back, and pooled connections are always released. Repository SQL uses positional parameter binding rather than interpolating session values into SQL text.
 
-The complete local quality gates for the current feature are green: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` pass; the repository has 90 passing tests across nine suites; and `npm audit` reports zero known dependency vulnerabilities. I also reviewed the intended files for whitespace and secret hygiene. These local results do not replace pull-request CI.
+The database contract is documented through `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`. Real values remain in the ignored local `.env` or a deployment secret store, while `.env.example` contains safe placeholders. Startup currently validates database configuration before opening the HTTP listener but does not yet create the pool or prove live database connectivity.
 
-Before this feature can be merged, I still commit and push only the reviewed files, open a pull request to `main`, wait for GitHub Actions, and explicitly confirm zero failing and zero pending required checks. Only then do I squash merge and delete the feature branch, followed by verification that the post-merge `main` CI run is green.
+The schema draft uses InnoDB, unique refresh-token identifiers, application timestamps with millisecond precision, account/revocation and expiry indexes, and no raw refresh-token storage. I intentionally defer the account foreign key until the rebuilt `accounts` table is managed by the same migration history. A controlled migration runner and real MySQL integration/concurrency tests are still pending, so the migration has not been treated as a manual production-deployment instruction.
 
-The production relational auth-session repository, refresh JWT `jti` wiring, final refresh-token hash/lookup design, token-family reuse containment, refresh and logout endpoints, authenticated middleware, registration/login persistence, password hashing, brute-force controls, remaining backend services, frontend, and full frontend/API integration remain future application work. Continuous deployment and Lightsail deployment remain intentionally deferred until the application is ready.
+The complete local quality gates for the current feature are green: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` pass; the repository has 129 passing tests across eleven suites (126 in `accounts-service` and 3 in `@mailshrimp/http`); and `npm audit` reports zero known dependency vulnerabilities. `git diff --check` also completes without whitespace errors. These local results do not replace pull-request CI.
+
+Before this feature can be merged, I still review the final diff and secret hygiene, commit and push only the intended files, open a pull request to `main`, wait for GitHub Actions, and explicitly confirm zero failing and zero pending required checks. Only then do I squash merge and delete the feature branch, followed by verification that the post-merge `main` CI run is green.
+
+The next authentication work includes wiring the pool/repository into the running service, controlled schema-migration execution, real MySQL integration/concurrent-locking tests, refresh JWT `jti` issuance, the final refresh-token hash/lookup design, token-family reuse containment, refresh/logout endpoints, authenticated middleware, and the email/password login flow. Login will find an account by email, verify the stored password hash, use the trusted account ID as the JWT subject, and return the same generic failure for an unknown email or incorrect password. Password hashes, not plaintext passwords, belong in persistent account data; the final hashing and legacy-bcrypt migration policy remains to be selected deliberately.
+
+The remaining backend services, frontend, full frontend/API integration, and continuous deployment/Lightsail work remain intentionally deferred until the application is ready.
