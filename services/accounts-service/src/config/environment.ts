@@ -19,6 +19,14 @@ import {
 export const DEFAULT_PORT = 3111;
 
 /**
+ * Default TCP port used by MySQL.
+ *
+ * I keep the standard MySQL port as a fallback so deployments only need to
+ * override DB_PORT when their database listens on a non-standard port.
+ */
+export const DEFAULT_DB_PORT = 3306;
+
+/**
  * Minimum length required for authentication signing secrets.
  *
  * I require at least 32 characters as a basic configuration safeguard.
@@ -27,6 +35,22 @@ export const DEFAULT_PORT = 3111;
  * source rather than chosen manually.
  */
 export const MIN_AUTH_SECRET_LENGTH = 32;
+
+/**
+ * Validated MySQL configuration used by the accounts-service persistence
+ * infrastructure.
+ *
+ * I keep database configuration independent from mysql2 so the configuration
+ * layer validates deployment input without depending on a particular database
+ * client implementation.
+ */
+export interface DatabaseConfig {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+}
 
 /**
  * Authentication secrets required by the accounts service.
@@ -85,6 +109,97 @@ export function getPort(configuredPort = process.env.PORT): number {
   }
 
   return port;
+}
+
+/**
+ * Validates a required database text configuration value.
+ *
+ * I reject missing and whitespace-only values so the service cannot start with
+ * an incomplete database configuration. I return the original value rather
+ * than the trimmed version because database passwords and other credentials
+ * may legitimately contain leading or trailing whitespace.
+ *
+ * The configured value is deliberately omitted from the error message. This
+ * is especially important for DB_PASSWORD because startup errors may be
+ * captured by deployment or application logs.
+ */
+function validateRequiredDatabaseValue(
+  variableName: string,
+  configuredValue: string | undefined,
+): string {
+  if (configuredValue === undefined || configuredValue.trim().length === 0) {
+    throw new Error(
+      `Invalid ${variableName} environment variable. Expected a non-empty value.`,
+    );
+  }
+
+  return configuredValue;
+}
+
+/**
+ * Validates the MySQL TCP port.
+ *
+ * I accept only decimal digits so values such as scientific notation,
+ * fractional numbers, signs, or surrounding whitespace are rejected instead
+ * of being interpreted implicitly by JavaScript.
+ */
+function validateDatabasePort(configuredPort: string): number {
+  if (!/^\d+$/.test(configuredPort)) {
+    throw new Error(
+      "Invalid DB_PORT environment variable. Expected an integer between 1 and 65535.",
+    );
+  }
+
+  const port = Number(configuredPort);
+
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      "Invalid DB_PORT environment variable. Expected an integer between 1 and 65535.",
+    );
+  }
+
+  return port;
+}
+
+/**
+ * Resolves and validates the MySQL configuration used by accounts-service.
+ *
+ * The database host, database name, user, and password are required because I
+ * do not want a deployment to silently connect with guessed credentials or to
+ * an unintended database. DB_PORT is the only database value with a default,
+ * using the standard MySQL port when it is omitted.
+ *
+ * Parameters default to process.env during normal application execution while
+ * remaining injectable for tests. This keeps configuration tests deterministic
+ * and avoids modifying global process state between test cases.
+ */
+export function getDatabaseConfig(
+  host = process.env.DB_HOST,
+  configuredPort = process.env.DB_PORT,
+  database = process.env.DB_NAME,
+  user = process.env.DB_USER,
+  password = process.env.DB_PASSWORD,
+): DatabaseConfig {
+  const validatedHost = validateRequiredDatabaseValue("DB_HOST", host);
+  const validatedDatabase = validateRequiredDatabaseValue("DB_NAME", database);
+  const validatedUser = validateRequiredDatabaseValue("DB_USER", user);
+  const validatedPassword = validateRequiredDatabaseValue(
+    "DB_PASSWORD",
+    password,
+  );
+
+  const port =
+    configuredPort === undefined
+      ? DEFAULT_DB_PORT
+      : validateDatabasePort(configuredPort);
+
+  return {
+    host: validatedHost,
+    port,
+    database: validatedDatabase,
+    user: validatedUser,
+    password: validatedPassword,
+  };
 }
 
 /**

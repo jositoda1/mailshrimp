@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import {
   getAuthenticationSecrets,
   getAuthenticationTokenLifetimes,
+  getDatabaseConfig,
   getPort,
 } from "./config/environment.js";
 import { logger } from "./logging/logger.js";
@@ -11,9 +12,23 @@ import { logger } from "./logging/logger.js";
 /**
  * I resolve required environment configuration before creating the HTTP
  * listener so an invalid deployment fails immediately during startup instead
- * of accepting traffic with incomplete authentication configuration.
+ * of accepting traffic with incomplete service configuration.
  */
 const port = getPort();
+
+/**
+ * Database configuration is mandatory service configuration.
+ *
+ * I validate it during startup before any MySQL connection is created. This
+ * keeps malformed host, port, database, user, or password configuration from
+ * reaching the persistence layer and prevents the service from appearing
+ * healthy with an unusable database configuration.
+ *
+ * I deliberately do not log the returned configuration because DB_PASSWORD is
+ * a credential and must never be written to application, CI, deployment, or
+ * process-manager logs.
+ */
+getDatabaseConfig();
 
 /**
  * Authentication signing credentials are mandatory service configuration.
@@ -67,8 +82,8 @@ app.listen(port, () => {
    * The event name makes this entry easy to search when investigating service
    * restarts, deployments, or availability problems.
    *
-   * Authentication secrets and other authentication configuration are
-   * intentionally absent from this log entry.
+   * Database credentials, authentication secrets, and other sensitive
+   * configuration are intentionally absent from this log entry.
    */
   logger.info(
     {
