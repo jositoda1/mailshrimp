@@ -1,5 +1,6 @@
 // services/accounts-service/src/server.ts
 
+import { MySqlAuthSessionRepository } from "./auth/session/mysql-auth-session-repository.js";
 import { createApp } from "./app.js";
 import {
   getAuthenticationSecrets,
@@ -7,89 +8,205 @@ import {
   getDatabaseConfig,
   getPort,
 } from "./config/environment.js";
+import { initializeMySql } from "./database/mysql-lifecycle.js";
 import { logger } from "./logging/logger.js";
+import { shutdownService, type ShutdownSignal } from "./service-shutdown.js";
+import { registerShutdownSignals } from "./shutdown-signals.js";
 
 /**
- * I resolve required environment configuration before creating the HTTP
- * listener so an invalid deployment fails immediately during startup instead
- * of accepting traffic with incomplete service configuration.
+ * Starts the executable accounts service.
+ *
+ * I keep startup orchestration in one asynchronous function because mandatory
+ * infrastructure dependencies must become ready before the HTTP listener is
+ * opened. This prevents the process from accepting traffic while required
+ * persistence infrastructure is unavailable.
  */
-const port = getPort();
-
-/**
- * Database configuration is mandatory service configuration.
- *
- * I validate it during startup before any MySQL connection is created. This
- * keeps malformed host, port, database, user, or password configuration from
- * reaching the persistence layer and prevents the service from appearing
- * healthy with an unusable database configuration.
- *
- * I deliberately do not log the returned configuration because DB_PASSWORD is
- * a credential and must never be written to application, CI, deployment, or
- * process-manager logs.
- */
-getDatabaseConfig();
-
-/**
- * Authentication signing credentials are mandatory service configuration.
- *
- * I validate them during startup even though the token-signing layer is not
- * wired into HTTP routes yet. This prevents a deployment from appearing
- * healthy while carrying invalid authentication configuration.
- *
- * I deliberately do not log these values. Authentication secrets must never
- * be written to application, CI, or process-manager logs.
- */
-getAuthenticationSecrets();
-
-/**
- * Token lifetimes are also validated during startup.
- *
- * I keep these values configurable through the environment, but configuration
- * flexibility must not allow malformed or out-of-policy values to reach the
- * token-signing layer. Missing values use the documented defaults, while a
- * configured invalid value causes startup to fail immediately.
- *
- * The validated lifetimes are not consumed here yet because authentication
- * HTTP routes are not wired into the application. When that integration is
- * added, the configuration layer will provide these validated values to the
- * token service rather than allowing the token service to read process.env.
- */
-getAuthenticationTokenLifetimes();
-
-/**
- * I create the Express application through createApp() instead of configuring
- * Express directly in this file.
- *
- * Keeping application construction separate from server startup allows the
- * application to be tested with Supertest without opening a real TCP port.
- */
-const app = createApp();
-
-/**
- * This file is the executable entry point of the accounts service.
- *
- * Only the executable server is responsible for opening the network port.
- * The Express application itself remains independent from the HTTP listener,
- * which keeps the service easier to test and maintain.
- */
-app.listen(port, () => {
+async function startServer(): Promise<void> {
   /**
-   * I use the structured application logger instead of console.log so startup
-   * events have the same machine-readable format and service metadata as the
-   * rest of the accounts-service logs.
-   *
-   * The event name makes this entry easy to search when investigating service
-   * restarts, deployments, or availability problems.
-   *
-   * Database credentials, authentication secrets, and other sensitive
-   * configuration are intentionally absent from this log entry.
+   * I resolve required environment configuration before creating runtime
+   * resources. Invalid deployment configuration therefore fails before a
+   * database pool or HTTP listener is created.
    */
-  logger.info(
+  const port = getPort();
+
+  /**
+   * Database configuration is mandatory service configuration.
+   *
+   * I retain the validated object because it is passed explicitly into the
+   * MySQL lifecycle layer. Database infrastructure does not read process.env
+   * directly, which keeps configuration parsing centralized and independently
+   * testable.
+   *
+   * I deliberately never log this object because it contains DB_PASSWORD.
+   */
+  const databaseConfig = getDatabaseConfig();
+
+  /**
+   * Authentication signing credentials are mandatory service configuration.
+   *
+   * I validate them during startup even though authentication HTTP routes are
+   * not wired into the application yet. This prevents a deployment from
+   * appearing healthy while carrying invalid authentication configuration.
+   *
+   * Authentication secrets are deliberately never logged.
+   */
+  getAuthenticationSecrets();
+
+  /**
+   * Token lifetimes are validated during startup for the same fail-fast
+   * reason. They will be injected into the authentication layer when the HTTP
+   * authentication flow is implemented.
+   */
+  getAuthenticationTokenLifetimes();
+
+  /**
+   * I initialize one shared MySQL pool for this service process.
+   *
+   * initializeMySql() creates the bounded pool and verifies live database
+   * connectivity before returning it. If readiness fails, initialization
+   * closes the pool before propagating the startup failure.
+   *
+   * A successful return transfers ownership of the pool to this executable
+   * lifecycle.
+   */
+  const databasePool = await initializeMySql(databaseConfig);
+
+  /**
+   * I create one MySQL-backed authentication session repository from the
+   * shared service pool.
+   *
+   * The repository receives its persistence dependency explicitly instead of
+   * creating its own pool. This keeps database connection ownership
+   * centralized in the executable lifecycle and prevents repository instances
+   * from creating independent connection pools.
+   *
+   * Constructing this repository does not execute a database query.
+   * Authentication use cases will call it later when login, refresh, logout,
+   * and session-management behavior is connected to HTTP routes.
+   */
+  const authSessionRepository = new MySqlAuthSessionRepository(databasePool);
+
+  /**
+   * I create the Express application only after mandatory startup dependencies
+   * have passed their validation and readiness checks.
+   *
+   * I inject the authentication session repository through the application
+   * dependency contract instead of allowing createApp() to construct database
+   * infrastructure. This keeps application composition explicit and makes it
+   * possible for tests to provide controlled repository implementations.
+   */
+  const app = createApp(logger, {
+    authSessionRepository,
+  });
+
+  /**
+   * app.listen() returns the underlying Node.js HTTP server.
+   *
+   * I retain this reference because graceful shutdown must first stop the HTTP
+   * listener and wait for it to finish closing before releasing the shared
+   * MySQL pool.
+   */
+  const httpServer = app.listen(port, () => {
+    /**
+     * The startup event deliberately contains only non-sensitive operational
+     * metadata. Database credentials and authentication secrets must never be
+     * written to logs.
+     */
+    logger.info(
+      {
+        event: "service_started",
+        port,
+      },
+      "Accounts service started.",
+    );
+  });
+
+  /**
+   * Performs one graceful shutdown sequence after a supported termination
+   * signal has been received.
+   *
+   * Signal registration is separated from resource cleanup. This executable
+   * boundary owns logging and process exit behavior, while shutdownService()
+   * owns the tested HTTP-then-MySQL cleanup order.
+   */
+  const handleShutdown = async (signal: ShutdownSignal): Promise<void> => {
+    logger.info(
+      {
+        event: "service_shutdown_started",
+        signal,
+      },
+      "Accounts service shutdown started.",
+    );
+
+    try {
+      /**
+       * HTTP is closed before MySQL so persistence remains available while
+       * already accepted HTTP work finishes.
+       */
+      await shutdownService(
+        {
+          httpServer,
+          databasePool,
+        },
+        signal,
+      );
+
+      logger.info(
+        {
+          event: "service_shutdown_completed",
+          signal,
+        },
+        "Accounts service shutdown completed.",
+      );
+    } catch (error: unknown) {
+      /**
+       * A shutdown failure must be visible to process supervision and
+       * deployment tooling. I log the failure and mark process termination as
+       * unsuccessful instead of silently treating incomplete cleanup as a
+       * normal shutdown.
+       */
+      logger.error(
+        {
+          event: "service_shutdown_failed",
+          signal,
+          error,
+        },
+        "Accounts service shutdown failed.",
+      );
+
+      process.exitCode = 1;
+    }
+  };
+
+  /**
+   * I delegate signal registration and duplicate-signal protection to the
+   * independently tested signal lifecycle module.
+   *
+   * That module ensures SIGTERM and SIGINT are supported and that only the
+   * first received termination signal starts asynchronous cleanup.
+   */
+  registerShutdownSignals(handleShutdown);
+}
+
+/**
+ * I handle startup failure at the executable boundary instead of hiding it in
+ * lower-level infrastructure functions.
+ *
+ * initializeMySql() owns and closes its pool if database readiness fails before
+ * ownership reaches this executable. Therefore a failed database startup does
+ * not leave a successfully created but unowned MySQL pool behind.
+ *
+ * Database configuration and authentication secrets are intentionally absent
+ * from this log event.
+ */
+startServer().catch((error: unknown) => {
+  logger.error(
     {
-      event: "service_started",
-      port,
+      event: "service_start_failed",
+      error,
     },
-    "Accounts service started.",
+    "Accounts service failed to start.",
   );
+
+  process.exitCode = 1;
 });
