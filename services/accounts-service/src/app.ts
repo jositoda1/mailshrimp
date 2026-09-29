@@ -1,14 +1,25 @@
-import express, {
-  type Express,
-  type Request,
-  type Response,
-} from "express";
+// services/accounts-service/src/app.ts
+
+import express, { type Express, type Request, type Response } from "express";
 import { HttpStatus } from "@mailshrimp/http";
 import { type Logger } from "pino";
 
+import type { AuthSessionRepository } from "./auth/session/auth-session-repository.js";
 import { logger as defaultLogger } from "./logging/logger.js";
 import { createHttpLogger } from "./middleware/http-logger.js";
 import { requestContext } from "./middleware/request-context.js";
+
+/**
+ * Contains infrastructure dependencies required by the accounts application.
+ *
+ * I inject application dependencies instead of constructing database-backed
+ * implementations inside createApp(). This keeps Express independent from
+ * infrastructure creation and allows tests to provide controlled in-memory or
+ * mocked implementations without opening real database connections.
+ */
+export interface AppDependencies {
+  authSessionRepository?: AuthSessionRepository;
+}
 
 /**
  * Creates and configures the accounts-service Express application.
@@ -19,10 +30,30 @@ import { requestContext } from "./middleware/request-context.js";
  *
  * A logger can be injected for automated tests. Normal application startup
  * uses the shared accounts-service logger.
+ *
+ * Infrastructure dependencies are also injected explicitly. The authentication
+ * session repository is optional temporarily because no authentication HTTP
+ * route consumes it yet. Once the first authentication route is wired, I can
+ * make this dependency mandatory without forcing unrelated health-route tests
+ * to construct unused persistence infrastructure today.
  */
-export function createApp(logger: Logger = defaultLogger): Express {
+export function createApp(
+  logger: Logger = defaultLogger,
+  dependencies: AppDependencies = {},
+): Express {
   const app = express();
-/**
+
+  /**
+   * I reference the injected repository even before authentication routes are
+   * implemented so TypeScript and ESLint can verify the dependency contract
+   * while this feature establishes application composition.
+   *
+   * No database operation is performed here. HTTP routes will consume the
+   * repository when the authentication use cases are wired.
+   */
+  void dependencies.authSessionRepository;
+
+  /**
    * I disable the Express technology disclosure header because clients do not
    * need to know which server framework implements this API. This reduces
    * unnecessary implementation information exposed in HTTP responses.
@@ -65,7 +96,6 @@ export function createApp(logger: Logger = defaultLogger): Express {
       service: "accounts-service",
     });
   });
-
 
   return app;
 }
