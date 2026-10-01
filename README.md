@@ -18,8 +18,10 @@ foundation, health endpoint, executable server entry point, validated
 environment configuration, structured logging, HTTP request correlation,
 shared HTTP status package integration, authentication configuration,
 JWT token service, configurable token lifetimes, refresh-session persistence
-contracts, production MySQL auth-session repository foundation, tests, linting,
-type checking, and production build are implemented and passing locally.
+contracts, production MySQL auth-session repository, startup database
+readiness, graceful MySQL/HTTP shutdown lifecycle, and controlled migration
+runner foundation are implemented. The current migration-runner feature has passed local validation and is
+awaiting final review before pull-request CI.
 
 The clean repository is published to the new GitHub repository. I do not
 reuse the compromised repository or its history. New application work is
@@ -36,7 +38,7 @@ each service has its own source code, configuration, tests, build,
 
 runtime entry point, and deployment lifecycle.
 
-``` text
+```text
 
 mailshrimp/
 
@@ -61,13 +63,13 @@ mailshrimp/
 
 The planned backend services include:
 
--   `accounts-service` --- account management and authentication.
+- `accounts-service` --- account management and authentication.
 
--   `contacts-service` --- contacts and contact-list management.
+- `contacts-service` --- contacts and contact-list management.
 
--   `messages-service` --- email/message creation, sending, and related
+- `messages-service` --- email/message creation, sending, and related
 
-    processing.
+  processing.
 
 I use `packages/` for genuinely stable reusable code instead of copying
 
@@ -112,8 +114,7 @@ The package currently exports `HttpStatus` through its public package
 
 entry point. Consumers import it as:
 
-``` typescript
-
+```typescript
 import { HttpStatus } from "@mailshrimp/http";
 ```
 
@@ -129,10 +130,8 @@ The current enum contains the HTTP statuses needed by the project or
 
 expected in the near term:
 
-``` typescript
-
+```typescript
 export enum HttpStatus {
-
   OK_200 = 200,
 
   CREATED_201 = 201,
@@ -156,7 +155,6 @@ export enum HttpStatus {
   BAD_GATEWAY_502 = 502,
 
   SERVICE_UNAVAILABLE_503 = 503,
-
 }
 ```
 
@@ -242,7 +240,7 @@ repository-wide decision rather than an incidental cleanup.
 
 I use npm workspaces from the repository root:
 
-``` json
+```json
 
 "workspaces": [
 
@@ -263,35 +261,35 @@ can install reproducible dependency versions.
 
 Current runtime requirements are:
 
--   Node.js 24 or newer.
+- Node.js 24 or newer.
 
--   npm 11 or newer.
+- npm 11 or newer.
 
 ## Current technology stack
 
 The currently configured backend toolchain includes:
 
--   TypeScript 5.
+- TypeScript 5.
 
--   Node.js 24.
+- Node.js 24.
 
--   Express 5.
+- Express 5.
 
--   Jest 30.
+- Jest 30.
 
--   ts-jest.
+- ts-jest.
 
--   Supertest.
+- Supertest.
 
--   ESLint 10.
+- ESLint 10.
 
--   typescript-eslint.
+- typescript-eslint.
 
--   Pino 10.3.1 for structured application and HTTP logging.
+- Pino 10.3.1 for structured application and HTTP logging.
 
--   jose 6.2.12 for JWT signing and verification.
+- jose 6.2.12 for JWT signing and verification.
 
--   mysql2 3.24.4 for direct MySQL persistence and pooled connections.
+- mysql2 3.24.4 for direct MySQL persistence and pooled connections.
 
 The frontend is planned around React, Vite, TypeScript, functional
 
@@ -313,13 +311,13 @@ checks, and fallthrough protection.
 
 I use two TypeScript configurations for different purposes:
 
--   `tsconfig.json` covers application source and tests for development
+- `tsconfig.json` covers application source and tests for development
 
-    and type checking.
+  and type checking.
 
--   `tsconfig.build.json` builds only production source under `src/`
+- `tsconfig.build.json` builds only production source under `src/`
 
-    into `dist/`.
+  into `dist/`.
 
 This separation prevents test files from being emitted into the
 
@@ -335,8 +333,7 @@ With NodeNext semantics, I write relative TypeScript imports using the
 
 `.js` extension that will exist after compilation. For example:
 
-``` typescript
-
+```typescript
 import { createApp } from "./app.js";
 ```
 
@@ -350,19 +347,27 @@ import model without changing imports just for the test runner.
 
 The current structure includes:
 
-``` text
+```text
 services/accounts-service/
 ├── __tests__/
 │   ├── helpers/
 │   │   └── test-logger.ts
 │   ├── auth-session-repository.test.ts
+│   ├── database-migration-lifecycle.test.ts
+│   ├── database-migration-service.test.ts
 │   ├── environment.test.ts
 │   ├── health.test.ts
 │   ├── http-logger.test.ts
 │   ├── logger.test.ts
 │   ├── mysql-auth-session-repository.test.ts
+│   ├── mysql-lifecycle.test.ts
+│   ├── mysql-migration-runner.test.ts
+│   ├── mysql-migrations.test.ts
 │   ├── mysql-pool.test.ts
+│   ├── mysql-readiness.test.ts
 │   ├── request-context.test.ts
+│   ├── service-shutdown.test.ts
+│   ├── shutdown-signals.test.ts
 │   ├── token-config.test.ts
 │   └── token-service.test.ts
 ├── src/
@@ -379,14 +384,23 @@ services/accounts-service/
 │   ├── database/
 │   │   ├── migrations/
 │   │   │   └── 001-create-auth-sessions.sql
-│   │   └── mysql-pool.ts
+│   │   ├── database-migration-lifecycle.ts
+│   │   ├── database-migration-service.ts
+│   │   ├── migrate.ts
+│   │   ├── mysql-lifecycle.ts
+│   │   ├── mysql-migration-runner.ts
+│   │   ├── mysql-migrations.ts
+│   │   ├── mysql-pool.ts
+│   │   └── mysql-readiness.ts
 │   ├── logging/
 │   │   └── logger.ts
 │   ├── middleware/
 │   │   ├── http-logger.ts
 │   │   └── request-context.ts
 │   ├── app.ts
-│   └── server.ts
+│   ├── server.ts
+│   ├── service-shutdown.ts
+│   └── shutdown-signals.ts
 ├── .env.example
 ├── eslint.config.mjs
 ├── jest.config.cjs
@@ -427,21 +441,18 @@ regression test verifies that the header remains absent.
 
 The accounts service currently implements:
 
-``` text
+```text
 
 GET /health
 ```
 
 A successful response returns HTTP `200` with:
 
-``` json
-
+```json
 {
-
   "status": "ok",
 
   "service": "accounts-service"
-
 }
 ```
 
@@ -463,7 +474,7 @@ The production entry point is `src/server.ts`, compiled to
 
 I start the compiled service with:
 
-``` bash
+```bash
 
 npm start --workspace @mailshrimp/accounts-service
 ```
@@ -502,21 +513,21 @@ mutating global process environment state across unit tests.
 
 The tests cover:
 
--   the default port `3111`;
+- the default port `3111`;
 
--   a valid custom port;
+- a valid custom port;
 
--   the valid boundary ports `1` and `65535`;
+- the valid boundary ports `1` and `65535`;
 
--   an empty value;
+- an empty value;
 
--   non-numeric input;
+- non-numeric input;
 
--   zero and negative ports;
+- zero and negative ports;
 
--   ports above `65535`;
+- ports above `65535`;
 
--   non-integer numeric values.
+- non-integer numeric values.
 
 ## MySQL persistence foundation
 
@@ -538,7 +549,7 @@ is zero known vulnerabilities.
 
 The public environment contract now includes:
 
-``` dotenv
+```dotenv
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=mailshrimp
@@ -562,10 +573,10 @@ account.
 
 `getDatabaseConfig()` owns environment parsing and validation. The MySQL pool
 factory receives the already-validated configuration and does not read
-`process.env` directly. `server.ts` currently calls the validator before opening
-the HTTP listener so malformed database configuration fails fast. This is a
-configuration readiness check only: the running service does not yet create the
-shared pool or prove live MySQL connectivity during startup.
+`process.env` directly. `server.ts` validates configuration, initializes the
+shared pool, and executes a small `SELECT 1` readiness query before the HTTP
+listener starts. If MySQL is unreachable, startup fails instead of advertising
+the service as ready.
 
 ### Connection pool policy
 
@@ -589,6 +600,27 @@ so the explicit UTC connection convention prevents timestamp interpretation
 from silently depending on a developer machine, CI runner, or production host
 timezone.
 
+### MySQL startup and shutdown lifecycle
+
+`src/database/mysql-lifecycle.ts` owns startup initialization of the shared
+pool. `initializeMySql()` creates the pool, verifies live connectivity through
+`SELECT 1`, and returns the pool only after readiness succeeds. If readiness
+fails before ownership is handed to the executable server, the lifecycle closes
+the pool and propagates the startup error.
+
+After successful initialization, `server.ts` owns the shared pool. It creates
+`MySqlAuthSessionRepository` from that pool and injects the repository into
+`createApp()`. The health route remains request-time dependency-free: database
+readiness is established before the listener starts rather than by querying
+MySQL on every `GET /health`.
+
+Graceful shutdown is split into testable infrastructure modules. `SIGTERM` and
+`SIGINT` are registered once, and a duplicate-signal guard is set before
+asynchronous shutdown begins. Shutdown first stops the HTTP server and waits for
+it to finish closing, then closes the MySQL pool. Errors propagate to the
+executable boundary so process-level logging and the non-zero exit code remain
+centralized in `server.ts`.
+
 ### Auth-session schema migration
 
 `src/database/migrations/001-create-auth-sessions.sql` defines the current
@@ -606,9 +638,64 @@ I intentionally do not add the `account_id` foreign key yet because the rebuilt
 `accounts` table is not yet managed by this migration history. The migration is
 therefore an independently creatable auth-session table, and referential
 integrity will be introduced only after the accounts schema is versioned in the
-same controlled migration set. I also have not implemented the migration runner
-yet. This SQL file has not been executed as a production-deployment step, and I
-will not treat manual SQL execution as the long-term migration process.
+same controlled migration set.
+
+### Controlled MySQL migration runner
+
+The current feature introduces a dedicated migration runner instead of treating
+manual SQL execution as the long-term deployment process. The runner bootstraps
+an internal `schema_migrations` table and records the stable name of each
+successfully applied migration together with its application timestamp. A
+migration already present in that durable history is skipped on later runs.
+
+The ordered migration manifest is explicit in
+`src/database/mysql-migrations.ts`; I do not discover arbitrary migration files
+with a runtime directory scan. Once a migration has been deployed, its stable
+name and ordering position must not be changed retroactively. Future schema
+changes are appended as new migrations.
+
+`mysql-migration-runner.ts` validates the supplied migration list before it
+touches application schema. Empty names, empty SQL, and duplicate names are
+rejected. Migration SQL is executed before its history row is inserted, so a
+query that fails is not recorded as successfully applied.
+
+I do not enable mysql2 `multipleStatements` globally. The current
+`001-create-auth-sessions.sql` file contains one schema statement, and widening
+the driver's statement surface is unnecessary. If a later migration needs
+multiple operations, I will model that requirement deliberately rather than
+enabling unrestricted multi-statement execution for every pooled connection.
+
+I also do not claim transaction rollback semantics that MySQL cannot guarantee
+for arbitrary DDL. MySQL schema statements can perform implicit commits, so the
+runner does not wrap migrations in a transaction and present a false promise of
+atomic schema rollback. Migration design and recovery behavior must be reviewed
+before deployment.
+
+The production build copies `src/database/migrations/` into
+`dist/database/migrations/` after TypeScript compilation. This is required
+because `tsc` compiles TypeScript but does not copy SQL assets. The loader
+resolves migration files relative to its compiled module with `import.meta.url`,
+so execution does not depend on the shell's current working directory.
+
+Migration execution is a dedicated command rather than part of normal HTTP
+startup. The accounts-service workspace provides:
+
+```powershell
+npm run migrate --workspace @mailshrimp/accounts-service
+npm run migrate:local --workspace @mailshrimp/accounts-service
+```
+
+`migrate:local` uses Node.js native `--env-file=.env` loading for local
+development. The migration executable validates database configuration through
+the existing configuration layer, creates a migration-owned pool, runs the
+ordered migrations, and always closes that pool before the command finishes.
+The migration service itself receives an already-owned pool and deliberately
+does not close it.
+
+The runner exists, but I have not yet treated the current branch as permission
+to run migrations against a production database. Real MySQL integration tests,
+deployment sequencing, backup/recovery expectations, and production execution
+policy still need to be validated before deployment automation is introduced.
 
 ## Logging and observability
 
@@ -632,7 +719,7 @@ and alerting.
 
 The shared logger configuration lives in:
 
-``` text
+```text
 
 services/accounts-service/src/logging/logger.ts
 ```
@@ -647,11 +734,11 @@ instead of using `console.log`.
 
 The current HTTP logging policy uses:
 
--   `info` for successful requests and normal responses below HTTP 400;
+- `info` for successful requests and normal responses below HTTP 400;
 
--   `warn` for HTTP 4xx client-error responses;
+- `warn` for HTTP 4xx client-error responses;
 
--   `error` for HTTP 5xx server-error responses.
+- `error` for HTTP 5xx server-error responses.
 
 These levels provide useful operational filtering without treating every
 
@@ -697,7 +784,7 @@ UUID request identifier.
 
 The identifier is exposed to the client through:
 
-``` text
+```text
 
 X-Request-ID
 ```
@@ -726,10 +813,8 @@ The HTTP middleware records a completed-request event containing
 
 diagnostic metadata such as:
 
-``` json
-
+```json
 {
-
   "service": "accounts-service",
 
   "event": "http_request_completed",
@@ -743,7 +828,6 @@ diagnostic metadata such as:
   "statusCode": 200,
 
   "durationMs": 5.204
-
 }
 ```
 
@@ -821,13 +905,16 @@ descriptive
 
 `*.test.ts` filenames.
 
-The current `accounts-service` suite contains ten test suites and 126
-passing tests. The `@mailshrimp/http` package adds one suite with three tests,
-for eleven suites and 129 passing tests repository-wide. The in-memory
-refresh-session repository suite contributes 13 behavioral tests, and the
-production MySQL repository/pool tests add focused coverage for SQL binding,
-transactions, locking requests, row mapping, revocation, pool bounds, UTC date
-handling, and credential preservation.
+The current repository-wide validation contains 19 passing suites and
+156 passing tests: 18 suites with 153 tests in `accounts-service` and one suite
+with 3 tests in `@mailshrimp/http`. The current migration-runner branch adds
+four focused migration suites containing 15 tests.
+
+The in-memory refresh-session repository suite contributes 13 behavioral tests,
+and the production MySQL repository/pool/lifecycle tests add focused coverage
+for SQL binding, transactions, locking requests, row mapping, revocation, pool
+bounds, UTC date handling, credential preservation, startup readiness, graceful
+shutdown, and signal handling.
 
 `health.test.ts` uses Supertest against `createApp()` and verifies the
 
@@ -873,6 +960,20 @@ password preservation. These repository and pool tests use mocks: they verify
 which mysql2 operations the code requests, but they cannot prove real InnoDB
 locking behavior. A real MySQL integration/concurrency suite remains required.
 
+`mysql-migration-runner.test.ts` contains 8 focused tests for migration-history
+bootstrap, execution/recording order, already-applied migration skipping,
+caller-supplied ordering, failure behavior, and validation of empty or duplicate
+migration definitions.
+
+`mysql-migrations.test.ts` contains 2 tests for the explicit migration manifest
+and for loading the versioned SQL asset. `database-migration-service.test.ts`
+contains 2 tests for orchestration and pool ownership.
+`database-migration-lifecycle.test.ts` contains 3 tests proving that the
+migration-owned pool closes after success and failure and that shutdown errors
+remain visible to the caller. These four suites use test doubles and filesystem
+loading; they still do not replace execution against a real disposable MySQL
+server.
+
 ### Jest and ESM
 
 I use ts-jest to execute TypeScript tests while preserving the ES-module
@@ -887,7 +988,7 @@ relative `.js` imports back to TypeScript modules during tests.
 
 The current Jest command runs through Node with:
 
-``` text
+```text
 
 --experimental-vm-modules
 ```
@@ -912,17 +1013,17 @@ source and tests.
 
 Important rules currently enforce that:
 
--   exported/function behavior has explicit return types where
+- exported/function behavior has explicit return types where
 
-    configured;
+  configured;
 
--   promises are not silently left unhandled;
+- promises are not silently left unhandled;
 
--   promises are not accidentally misused in callbacks or conditions;
+- promises are not accidentally misused in callbacks or conditions;
 
--   explicit `any` does not remove TypeScript guarantees without being
+- explicit `any` does not remove TypeScript guarantees without being
 
-    noticed.
+  noticed.
 
 Generated output, coverage data, dependencies, and similar artifacts are
 
@@ -932,7 +1033,7 @@ excluded from source-quality checks.
 
 From the repository root I run:
 
-``` bash
+```bash
 
 npm run typecheck
 
@@ -951,16 +1052,23 @@ application to maintain its own implementation while still participating
 
 in repository-wide checks.
 
-The repository-wide type check, lint, tests, and production build all pass
-locally. The latest complete run contains eleven passing suites and 129 passing
-tests: 126 in `accounts-service` and 3 in `@mailshrimp/http`.
+The complete repository-wide local quality gates pass on the current
+migration-runner branch. The test run contains 19 passing suites and 156
+passing tests: 18 suites with 153 tests in `accounts-service` and one suite with
+3 tests in `@mailshrimp/http`.
 
-`npm audit` also reports zero known vulnerabilities in the currently installed
-dependency tree.
+Repository-wide type checking, linting, tests, and the production build all
+pass. The production build preserves the explicit package-before-service order
+and copies the SQL migration assets into `dist/database/migrations/`.
+
+`npm audit` reports zero known vulnerabilities in the currently installed
+dependency tree, and `git diff --check` completes without whitespace errors.
+These local results are required before submission but do not replace
+pull-request CI.
 
 The current production build contains:
 
-``` text
+```text
 
 services/accounts-service/dist/app.js
 
@@ -1006,9 +1114,39 @@ services/accounts-service/dist/config/environment.js
 
 services/accounts-service/dist/config/environment.js.map
 
+services/accounts-service/dist/database/database-migration-lifecycle.js
+
+services/accounts-service/dist/database/database-migration-lifecycle.js.map
+
+services/accounts-service/dist/database/database-migration-service.js
+
+services/accounts-service/dist/database/database-migration-service.js.map
+
+services/accounts-service/dist/database/migrate.js
+
+services/accounts-service/dist/database/migrate.js.map
+
+services/accounts-service/dist/database/mysql-lifecycle.js
+
+services/accounts-service/dist/database/mysql-lifecycle.js.map
+
+services/accounts-service/dist/database/mysql-migration-runner.js
+
+services/accounts-service/dist/database/mysql-migration-runner.js.map
+
+services/accounts-service/dist/database/mysql-migrations.js
+
+services/accounts-service/dist/database/mysql-migrations.js.map
+
 services/accounts-service/dist/database/mysql-pool.js
 
 services/accounts-service/dist/database/mysql-pool.js.map
+
+services/accounts-service/dist/database/mysql-readiness.js
+
+services/accounts-service/dist/database/mysql-readiness.js.map
+
+services/accounts-service/dist/database/migrations/001-create-auth-sessions.sql
 
 services/accounts-service/dist/logging/logger.js
 
@@ -1025,6 +1163,14 @@ services/accounts-service/dist/middleware/request-context.js.map
 services/accounts-service/dist/server.js
 
 services/accounts-service/dist/server.js.map
+
+services/accounts-service/dist/service-shutdown.js
+
+services/accounts-service/dist/service-shutdown.js.map
+
+services/accounts-service/dist/shutdown-signals.js
+
+services/accounts-service/dist/shutdown-signals.js.map
 ```
 
 The shared HTTP package build produces JavaScript, declarations, source
@@ -1041,7 +1187,7 @@ packages are compiled before services that depend on their runtime
 
 JavaScript:
 
-``` json
+```json
 
 "build": "npm run build:packages && npm run build:services",
 
@@ -1096,7 +1242,7 @@ The compiled `dist/server.js` successfully started on port `3111`, and a
 
 request to:
 
-``` text
+```text
 
 http://127.0.0.1:3111/health
 ```
@@ -1113,17 +1259,13 @@ ID returned to the client, HTTP method, path, status `200`, and measured
 
 duration.
 
-This confirms the complete local path through the compiled JavaScript,
-
-Node.js runtime, TCP listener, Express application, request context,
-
-structured HTTP logging, and health route. That manual curl validation
-
-was performed before the later `X-Powered-By` hardening change; the
-
-current header behavior is covered by an automated regression test and
-
-can be rechecked manually after the next compiled runtime start.
+This confirms the original compiled HTTP path through Node.js, the TCP
+listener, Express application, request context, structured HTTP logging, and the
+health route. That manual curl validation predates the later MySQL startup
+lifecycle and `X-Powered-By` hardening changes. The current service now requires
+successful MySQL readiness before opening the listener; header behavior and the
+new lifecycle are covered by automated regression tests and will be included in
+the next end-to-end runtime validation against a real local MySQL instance.
 
 ## Security and repository hygiene
 
@@ -1141,23 +1283,23 @@ scanned project content for common credential and secret patterns. No
 
 matching secrets were found in that review.
 
-Before preparing the current staged changes, I repeated repository
+For the current feature, the final repository secret-hygiene review is
 
-hygiene checks. I checked tracked and untracked paths for common
+performed before staging and committing changes. I check tracked and
 
-sensitive filename patterns and scanned source content for common
+untracked paths for common sensitive filename patterns and scan source
 
-private-key, AWS credential, password, API-key, and token patterns
+content for common private-key, AWS credential, password, API-key, and
 
-without printing candidate secret values. The only content-pattern
+token patterns without printing candidate secret values. Deliberate test
 
-matches were deliberate `password`, `access_token`, and `refresh_token`
+fixtures are reviewed separately from real credentials so expected security
 
-fixtures in logging/redaction tests. No private-key or AWS access-key
+test strings are not mistaken for leaked secrets. I run `git diff --check`
 
-pattern was found. I also ran `git diff --check` and
+before staging and `git diff --cached --check` after `git add`; I only treat
 
-`git diff --cached --check`; both completed without whitespace errors.
+those staged checks as completed after they have actually run.
 
 The new Git repository uses the `main` branch and began with the clean
 
@@ -1169,19 +1311,19 @@ history is published to the new GitHub repository, and `main` tracks
 
 I never commit secrets such as:
 
--   `.env` files containing credentials;
+- `.env` files containing credentials;
 
--   private keys;
+- private keys;
 
--   certificates containing private material;
+- certificates containing private material;
 
--   AWS credentials or tokens;
+- AWS credentials or tokens;
 
--   GitHub tokens;
+- GitHub tokens;
 
--   passwords;
+- passwords;
 
--   production authentication secrets.
+- production authentication secrets.
 
 Example environment files such as `.env.example` may be committed only
 
@@ -1199,10 +1341,12 @@ local artifacts.
 
 Authentication is being implemented incrementally. The configuration, JWT
 token service, configurable token lifetimes, refresh-session persistence
-contract, and production MySQL auth-session repository foundation are
-implemented. The repository is not yet wired into the running service.
-Registration, email/password login, password hashing, refresh HTTP endpoints,
-logout, and authenticated business routes are still planned.
+contract, production MySQL auth-session repository, and shared MySQL service
+lifecycle are implemented. The running service now constructs
+`MySqlAuthSessionRepository` from the shared pool and injects it into
+`createApp()`, although no authentication HTTP route consumes the repository
+yet. Registration, email/password login, password hashing, refresh HTTP
+endpoints, logout, and authenticated business routes are still planned.
 
 The intended end-to-end model uses short-lived access tokens,
 longer-lived rotating refresh tokens, Secure and HttpOnly refresh-token
@@ -1271,7 +1415,7 @@ The concurrency test starts two rotations of the same active session without wai
 
 ### Remaining authentication security work
 
-The session repository is a foundation, not a complete authentication flow. The production relational repository now exists, but I still need to wire the shared MySQL pool/repository into the running service, introduce controlled migration execution, add real MySQL integration/concurrency tests, implement refresh JWT `jti` issuance/verification, finalize refresh-token hashing/lookup semantics, implement service-level rotation, cookie transport, CSRF protection, logout, reuse containment, and authenticated access middleware. A refresh token must never be accepted as an access token.
+The session repository is a foundation, not a complete authentication flow. The production relational repository is wired into the shared MySQL service lifecycle, and a controlled migration-runner foundation now exists. I still need to add real MySQL integration/concurrency tests, validate migration execution against a disposable MySQL database, implement refresh JWT `jti` issuance/verification, finalize refresh-token hashing/lookup semantics, implement service-level rotation, cookie transport, CSRF protection, logout, reuse containment, and authenticated access middleware. A refresh token must never be accepted as an access token.
 
 For browser refresh tokens I intend to use `HttpOnly` and `Secure`; final `SameSite`, `Path`, domain, and CSRF behavior will be derived from the actual frontend/API deployment topology. `HttpOnly` limits JavaScript access to the cookie but does not itself prevent CSRF.
 
@@ -1287,19 +1431,19 @@ MailShrimp is intended to track provider-supported email lifecycle
 
 events such as:
 
--   sent;
+- sent;
 
--   delivered;
+- delivered;
 
--   opened;
+- opened;
 
--   clicked;
+- clicked;
 
--   bounced;
+- bounced;
 
--   failed;
+- failed;
 
--   unsubscribed.
+- unsubscribed.
 
 I plan to process provider/webhook events idempotently and with privacy
 
@@ -1316,7 +1460,7 @@ presented as exact human-read measurements.
 I use a feature-branch workflow for new application changes. I do not
 merge unfinished work directly into `main`.
 
-``` text
+```text
 main
   └── feature branch
         ├── implement and document the change
@@ -1370,7 +1514,7 @@ manifest and lockfile are out of sync. The workflow then runs the same
 
 quality gates used locally:
 
-``` text
+```text
 
 npm ci
 
@@ -1543,17 +1687,14 @@ must never be copied into documentation, source code, tests, logs,
 
 commits, or example files.
 
-The local command is
-
-`npm run start:local --workspace @mailshrimp/accounts-service`. It uses
-
+The local HTTP command is
+`npm run start:local --workspace @mailshrimp/accounts-service`. The local
+migration command is
+`npm run migrate:local --workspace @mailshrimp/accounts-service`. Both use
 Node.js 24 native `--env-file=.env` support, so I do not add a `dotenv`
-
-dependency merely to load local development configuration. The normal
-
-`start` script remains environment-neutral for production, and tests
-
-inject explicit values instead of loading developer secrets.
+dependency merely to load local development configuration. The normal `start`
+and `migrate` scripts remain environment-neutral for production/automation, and
+tests inject explicit values instead of loading developer secrets.
 
 I manually validated local startup after building the service. It loaded
 
@@ -1608,7 +1749,7 @@ documentation branch. Before I commit and push that branch, I run the
 relevant local quality gates. For the current repository-wide workflow,
 the standard gates are:
 
-``` powershell
+```powershell
 npm run typecheck
 npm run lint
 npm test
@@ -1626,7 +1767,7 @@ job successfully. I verify that there are zero failing and zero pending
 required checks before I run the merge command. Only after that
 confirmation do I use a squash merge:
 
-``` powershell
+```powershell
 gh pr merge --squash --delete-branch
 ```
 
@@ -1727,13 +1868,12 @@ modification is rejected. The expiration test creates an already-expired
 token with the trusted key so expiration validation is tested
 independently from signature failure.
 
-The authentication-token, configurable-lifetime, and refresh-session
-persistence-foundation features have been merged after their required quality
-gates. The current MySQL auth-session persistence feature has completed its
-local gates: 129 tests across eleven suites pass, type checking, linting, and
-production build pass, and `npm audit` reports zero known dependency
-vulnerabilities. The feature still requires final review, commit/push, a pull
-request, and green PR CI before it can be merged.
+The authentication-token, configurable-lifetime, refresh-session
+persistence-foundation, MySQL persistence, and MySQL service-lifecycle features
+have all been merged after their required quality gates. The current
+`feat/mysql-migration-runner` branch builds the controlled schema-migration
+execution path and is still undergoing local validation before commit, push,
+pull-request CI, and merge.
 
 ## Infrastructure documentation
 
@@ -1789,20 +1929,65 @@ GitHub, CI/CD, or deployment.
 
 ## Current progress
 
-The authentication-token service, mandatory green-CI merge policy, configurable token-lifetime feature, and refresh-session persistence foundation are already merged into `main`. Pull Request #1 introduced the JWT token service, Pull Request #2 documented the mandatory green-PR-CI policy, Pull Request #3 made authentication token lifetimes deployment-configurable, and Pull Request #4 introduced the ORM-independent refresh-session domain contract, in-memory implementation, and concurrency/security behavior tests. Their required CI checks and post-merge `main` validation completed successfully.
+The authentication-token service, mandatory green-CI merge policy,
+configurable token-lifetime feature, refresh-session persistence foundation,
+MySQL persistence feature, and MySQL service-lifecycle feature are already
+merged into `main`.
 
-The current feature branch is `feat/auth-session-sequelize`. The branch name reflects the implementation direction considered when it was created, but the final feature does not use Sequelize. I removed Sequelize after the evaluated Sequelize 6 dependency tree introduced a known `uuid` advisory and the available force-fix/downgrade or unsupported override options were not acceptable. I kept the repository contract independent from ORM/database-client details and implemented the relational repository directly with `mysql2` 3.24.4.
+Pull Request #1 introduced the JWT token service. Pull Request #2 documented the
+mandatory green-PR-CI policy. Pull Request #3 made authentication token
+lifetimes deployment-configurable. Pull Request #4 introduced the
+ORM-independent refresh-session domain contract, in-memory implementation, and
+concurrency/security behavior tests. Pull Request #5 added validated MySQL
+configuration, the bounded UTC-aware pool, the production
+`MySqlAuthSessionRepository`, and the initial `auth_sessions` migration. Pull
+Request #6 wired the shared MySQL pool and repository into the running service,
+added startup `SELECT 1` readiness, and added graceful HTTP/MySQL shutdown with
+`SIGTERM`/`SIGINT` duplicate-signal protection. Their required pull-request and
+post-merge `main` CI validations completed successfully.
 
-The current feature adds validated MySQL environment configuration, a bounded UTC-aware pool factory, `MySqlAuthSessionRepository`, the `auth_sessions` schema migration draft, and focused unit tests. Rotation uses a transaction and `SELECT ... FOR UPDATE`; the replacement is inserted through the same transaction connection, failures roll back, and pooled connections are always released. Repository SQL uses positional parameter binding rather than interpolating session values into SQL text.
+The current branch is `feat/mysql-migration-runner`. It introduces an explicit
+ordered migration manifest, durable `schema_migrations` history, migration
+validation, a dedicated migration service and pool lifecycle, and the
+`migrate`/`migrate:local` executable commands. The accounts-service build now
+copies versioned SQL assets into `dist/database/migrations/` after TypeScript
+compilation so the compiled migration loader can resolve them relative to its
+own module.
 
-The database contract is documented through `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`. Real values remain in the ignored local `.env` or a deployment secret store, while `.env.example` contains safe placeholders. Startup currently validates database configuration before opening the HTTP listener but does not yet create the pool or prove live database connectivity.
+The migration runner deliberately does not execute as part of normal HTTP
+startup. Deployment or local operations invoke migrations explicitly. The
+runner skips already-recorded migrations, records a migration only after its SQL
+succeeds, rejects invalid/duplicate migration definitions, does not enable
+mysql2 `multipleStatements`, and does not claim transactional rollback for
+arbitrary MySQL DDL.
 
-The schema draft uses InnoDB, unique refresh-token identifiers, application timestamps with millisecond precision, account/revocation and expiry indexes, and no raw refresh-token storage. I intentionally defer the account foreign key until the rebuilt `accounts` table is managed by the same migration history. A controlled migration runner and real MySQL integration/concurrency tests are still pending, so the migration has not been treated as a manual production-deployment instruction.
+Validation for the current branch is green. The four new migration suites
+contain 15 passing tests covering the runner, SQL loader, migration service, and
+migration-owned pool lifecycle. The complete repository-wide run contains 19
+passing suites and 156 passing tests, with 153 tests in `accounts-service` and
+3 in `@mailshrimp/http`. Repository-wide type checking, linting, production
+build, SQL-asset copying, `npm audit`, and `git diff --check` also pass.
+`npm audit` reports zero known vulnerabilities. These local results do not
+replace the mandatory pull-request CI check.
 
-The complete local quality gates for the current feature are green: `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` pass; the repository has 129 passing tests across eleven suites (126 in `accounts-service` and 3 in `@mailshrimp/http`); and `npm audit` reports zero known dependency vulnerabilities. `git diff --check` also completes without whitespace errors. These local results do not replace pull-request CI.
+Before this feature can be merged, I still update and review this documentation,
+run the complete local quality gates, inspect the final Git diff and secret
+hygiene, commit and push only the intended files, open a pull request to `main`,
+wait for GitHub Actions, and explicitly confirm zero failing and zero pending
+required checks. Only then do I squash merge and delete the feature branch,
+followed by verification that the post-merge `main` CI run is green.
 
-Before this feature can be merged, I still review the final diff and secret hygiene, commit and push only the intended files, open a pull request to `main`, wait for GitHub Actions, and explicitly confirm zero failing and zero pending required checks. Only then do I squash merge and delete the feature branch, followed by verification that the post-merge `main` CI run is green.
+After the migration-runner foundation, the next database/authentication work
+includes real MySQL integration and concurrent-locking tests, validation of
+migration execution against a disposable MySQL database, refresh JWT `jti`
+issuance, the final refresh-token hash/lookup design, token-family reuse
+containment, refresh/logout endpoints, authenticated middleware, and the
+email/password login flow. Login will find an account by email, verify the
+stored password hash, use the trusted account ID as the JWT subject, and return
+the same generic failure for an unknown email or incorrect password. Password
+hashes, not plaintext passwords, belong in persistent account data; the final
+hashing and legacy-bcrypt migration policy remains to be selected deliberately.
 
-The next authentication work includes wiring the pool/repository into the running service, controlled schema-migration execution, real MySQL integration/concurrent-locking tests, refresh JWT `jti` issuance, the final refresh-token hash/lookup design, token-family reuse containment, refresh/logout endpoints, authenticated middleware, and the email/password login flow. Login will find an account by email, verify the stored password hash, use the trusted account ID as the JWT subject, and return the same generic failure for an unknown email or incorrect password. Password hashes, not plaintext passwords, belong in persistent account data; the final hashing and legacy-bcrypt migration policy remains to be selected deliberately.
-
-The remaining backend services, frontend, full frontend/API integration, and continuous deployment/Lightsail work remain intentionally deferred until the application is ready.
+The remaining backend services, frontend, full frontend/API integration, and
+continuous deployment/Lightsail work remain intentionally deferred until the
+application is ready.
