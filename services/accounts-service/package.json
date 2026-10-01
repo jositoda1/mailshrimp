@@ -9,7 +9,10 @@
     "npm": ">=11.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm run copy:migrations",
+    "copy:migrations": "node -e \"const fs=require('node:fs'); fs.cpSync('src/database/migrations','dist/database/migrations',{recursive:true});\"",
+    "migrate": "node dist/database/migrate.js",
+    "migrate:local": "node --env-file=.env dist/database/migrate.js",
     "start": "node dist/server.js",
     "start:local": "node --env-file=.env dist/server.js",
     "test": "node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --verbose",
